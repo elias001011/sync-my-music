@@ -81,7 +81,7 @@ operacional e integrações com [Musify](https://github.com/gokadzev/Musify) e
 
 | Serviço ou app | Playlists | Outras superfícies | Autenticação ou transporte |
 | --- | --- | --- | --- |
-| **Spotify** | Leitura e escrita | Matching de catálogo | OAuth; modo de escrita `sp_dc` opcional |
+| **Spotify** | Leitura e escrita | Export oficial, histórico e matching | OAuth ou modo Web `sp_dc` autônomo |
 | **YouTube Music** | Leitura e escrita | Matching de catálogo | OAuth da Data API ou sessão do navegador |
 | **Apple Music** | Leitura e escrita | Metadados de catálogo | Bearer + Media-User-Token |
 | **TIDAL** | Leitura e escrita | Metadados de catálogo | Bearer do web player |
@@ -157,12 +157,17 @@ Já implementado:
 - Histórico mensal/anual com retenção configurável de 1 a 10 anos.
 - Backup e restauração versionados do próprio SYNC; o cookie `sp_dc` fica fora
   dos ZIPs enquanto não houver criptografia.
+- Importação do ZIP/JSON oficial do Spotify com histórico idempotente nos
+  recaps e playlists/biblioteca no banco canônico.
+- Backup e restauração isolados por conta/provedor, sem credenciais; snapshots
+  nomeados podem ser usados como origem de transferências.
 
 Em evolução:
 
 - Adaptadores automáticos de curtidas, artistas seguidos e álbuns salvos para
   todos os serviços comerciais.
-- Configuração completa de várias contas nos conectores herdados.
+- Vários perfis de credenciais ao vivo nos jobs agendados; contas de
+  importação/restauração já são isoladas por rótulo.
 - Login e autorização adequados para acesso fora de uma LAN confiável.
 - Mais formatos de importação, ferramentas de conflito e testes de integração.
 - Tradução pt-BR completa da interface web.
@@ -227,7 +232,8 @@ padrão, pois perder uma música é normalmente pior do que manter uma música e
 O painel de **Contas** orienta a autenticação de cada serviço. O projeto nunca
 solicita diretamente a senha da sua conta:
 
-- Spotify usa OAuth oficial, com modo `sp_dc` opcional para escrita.
+- Spotify usa OAuth oficial ou uma sessão Web `sp_dc` completa para listar,
+  pesquisar, ler e escrever playlists sem app de desenvolvedor/Premium.
 - YouTube Music usa OAuth da Data API ou cookies do navegador.
 - TIDAL, Qobuz e Apple Music usam tokens/headers capturados do web player e
   precisam ser recapturados quando expirarem.

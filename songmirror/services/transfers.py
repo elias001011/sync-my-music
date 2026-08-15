@@ -11,7 +11,7 @@ import time
 import uuid
 
 from ..engine import logs, spotify
-from ..engine.config import parse_args
+from ..engine.config import parse_args, spotify_write_backend
 from ..engine.logs import log_add, log_miss
 from ..engine.matching import spotify_track_keys, track_key
 from ..engine.runner import load_cache, save_cache
@@ -235,7 +235,8 @@ class TransferService:
         self._settings.apply_to_env()
         opts = parse_args([])
         for side, prov in (("source", spec["source_provider"]), ("destination", spec["dest_provider"])):
-            source_only = side == "source" and prov == "musify" and self._database is not None
+            source_only = side == "source" and self._database is not None and (
+                prov == "musify" or ":" in prov)
             if not is_peer(prov) and not source_only:  # e.g. Jellyfin — browse-only
                 job["status"], job["error"] = "error", f"'{prov}' can't be a transfer {side} — it's a browse-only service."
                 self._emit("warn", f"transfer: {job['error']}", "transfer")
@@ -286,11 +287,16 @@ class TransferService:
             self._emit("warn", f"transfer failed: {job['error']}", "transfer")
 
     def _build(self, provider_id, opts):
-        if provider_id == "musify" and self._database is not None:
+        if (provider_id == "musify" or provider_id.startswith("musify:")) and self._database is not None:
             from .musify import MusifyCanonicalTarget
-            return MusifyCanonicalTarget(self._database)
+            account_id = "musify:default" if provider_id == "musify" else provider_id
+            return MusifyCanonicalTarget(self._database, account_id)
+        if ":" in provider_id and self._database is not None:
+            from .canonical_target import CanonicalAccountTarget
+            account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
+            return CanonicalAccountTarget(self._database, provider_id, account["label"]) if account else None
         sp = None
-        if provider_id == "spotify":
+        if provider_id == "spotify" and spotify_write_backend() != "cookie":
             try:
                 sp = spotify.client()
             except Exception:

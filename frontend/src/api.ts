@@ -6,6 +6,7 @@ import type {
   ConnectResponse,
   LinkUpsertRequest,
   LibrarySummary,
+  LibraryAccount,
   LibraryTracksResponse,
   MusifyExportResponse,
   MusifyBackupImport,
@@ -21,6 +22,7 @@ import type {
   RunResponse,
   ScheduleRequest,
   SonoraStatus,
+  SpotifyExportImport,
   Settings,
   StartTransferRequest,
   StartTransferResponse,
@@ -77,6 +79,7 @@ const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 export const api = {
   // Canonical local library + unified listening history
   getLibrarySummary: () => request<LibrarySummary>('/api/library/summary'),
+  getLibraryAccounts: () => request<LibraryAccount[]>('/api/library/accounts'),
   getLibraryTracks: (q = '', limit = 100, offset = 0) =>
     request<LibraryTracksResponse>(`/api/library/tracks?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
   getRecap: (year: number, month?: number) =>
@@ -86,10 +89,23 @@ export const api = {
     request<import('./types').SyncEvent[]>(`/api/logs?kind=${encodeURIComponent(kind)}&tag=${encodeURIComponent(tag)}&q=${encodeURIComponent(q)}&limit=${limit}`),
   exportMusify: (body: { source_provider: string; playlist_id: string; title?: string }) =>
     request<MusifyExportResponse>('/api/musify/export', json(body)),
-  restoreMusifyBackup: (file: File) => {
+  restoreMusifyBackup: (file: File, label = 'Musify backup') => {
     const form = new FormData()
     form.append('backup', file)
+    form.append('label', label)
     return request<MusifyBackupImport>('/api/musify/backup', { method: 'POST', body: form })
+  },
+  restoreSpotifyExport: (file: File, label: string) => {
+    const form = new FormData()
+    form.append('backup', file)
+    form.append('label', label)
+    return request<SpotifyExportImport>('/api/spotify/export-import', { method: 'POST', body: form })
+  },
+  restoreAccountBackup: (file: File) => {
+    const form = new FormData()
+    form.append('backup', file)
+    return request<{ account_id: string; provider: string; label: string; tracks: number; playlists: number; listens: number }>(
+      '/api/library/account-backup', { method: 'POST', body: form })
   },
   getSonoraStatus: () => request<SonoraStatus>('/api/sonora/status'),
   setSonoraEnabled: (enabled: boolean) => request<SonoraStatus>('/api/sonora/status', { method: 'PUT', body: JSON.stringify({ enabled }) }),
@@ -119,9 +135,8 @@ export const api = {
    * raw "copy request headers" block from a music.youtube.com XHR. */
   enableYtmusicBrowserMode: (headers: string) => request<PollResponse>('/api/accounts/ytmusic/browser', json({ headers })),
   disableYtmusicBrowserMode: () => request<PollResponse>('/api/accounts/ytmusic/browser', { method: 'DELETE' }),
-  /** Spotify-only cookie write mode: routes playlist writes through a pasted
-   * sp_dc cookie (first-party web client), bypassing the Development-Mode 403s a
-   * self-hosted dev app hits on playlist create / track edits. */
+  /** Spotify Web/cookie mode: first-party session for listing, search and writes,
+   * with no OAuth developer app dependency. */
   enableSpotifyCookieMode: (spDc: string) => request<PollResponse>('/api/accounts/spotify/cookie', json({ sp_dc: spDc })),
   disableSpotifyCookieMode: () => request<PollResponse>('/api/accounts/spotify/cookie', { method: 'DELETE' }),
 

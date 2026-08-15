@@ -13,6 +13,7 @@ import time
 from dotenv import load_dotenv
 
 from . import archive, spotify
+from .config import spotify_write_backend
 from .logs import fmt_counts, fmt_secs, log, log_note, log_section, log_summary, log_warn, paint
 from .targets import TargetAuthError, build_one, build_peers, build_targets, mirror_pair, reconcile
 from .targets.base import _normalize
@@ -208,7 +209,8 @@ def run_pass(opts, should_continue=None):
     spotify_is_target = (opts.sync_mode == "oneway" and source_provider != "spotify"
                          and spotify_requested)
     sp = None
-    if source_provider == "spotify" or spotify_requested:
+    cookie_only = spotify_write_backend() == "cookie"
+    if (source_provider == "spotify" or spotify_requested) and not cookie_only:
         try:
             sp = spotify.client(writable=opts.execute and (opts.sync_mode == "nway" or spotify_is_target))
         except RuntimeError as exc:

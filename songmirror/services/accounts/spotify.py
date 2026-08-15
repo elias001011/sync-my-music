@@ -58,6 +58,20 @@ class SpotifyConnector(Connector):
     def status(self) -> ConnStatus:
         from ...engine import spotify
 
+        if self._cookie_on():
+            from ...engine.spotify_cookie import configured, validate_session
+            if not configured():
+                return ConnStatus("expired", "Web/cookie mode needs a new sp_dc cookie")
+            try:
+                user_id = validate_session()
+            except Exception as exc:
+                return ConnStatus("expired", str(exc))
+            note = "Web/cookie · playlists, search and writes"
+            if user_id:
+                note += f" · {user_id}"
+            if self._isrc_app_on():
+                note += " · ISRC app"
+            return ConnStatus("connected", note)
         if not self._configured("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"):
             return ConnStatus("unconfigured")
         note = ((" · cookie writes" if self._cookie_on() else "")
@@ -117,10 +131,7 @@ class SpotifyConnector(Connector):
         return self.status()
 
     def enable_cookie(self, sp_dc: str) -> ConnStatus:
-        """Turn on the cookie write backend (bypasses Development-Mode 403s on
-        playlist writes). Store the pasted sp_dc cookie, validate it by minting a
-        web-player token, then flip SPOTIFY_WRITE_BACKEND=cookie. Reads still use
-        the OAuth connection, so that must stay connected too."""
+        """Use a first-party Web Player session for reads, search and writes."""
         from ...engine.spotify_cookie import sp_dc_path
         from ..settings import _open_private
 
@@ -139,10 +150,10 @@ class SpotifyConnector(Connector):
         with _open_private(path) as f:  # 0600 — it's a ~1-year account credential
             f.write(sp_dc)
         self._store.save({"SPOTIFY_WRITE_BACKEND": "cookie"})
-        return ConnStatus("connected", "cookie write mode")
+        return ConnStatus("connected", "Web/cookie mode · OAuth app not required")
 
     def disable_cookie(self) -> ConnStatus:
-        """Revert writes to the OAuth dev app. The cookie file is left in place so
+        """Revert the whole Spotify connector to OAuth. The cookie file is left in place so
         re-enabling needs no re-paste."""
         self._store.save({"SPOTIFY_WRITE_BACKEND": "oauth"})
         return self.status()

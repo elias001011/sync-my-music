@@ -8,18 +8,22 @@ import json
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from ...services.playlists import PlaylistLink, PlaylistService
+from ...engine.targets.base import TargetAuthError
 
 router = APIRouter()
 
 
 @router.get("/api/playlists")
 def playlists(request: Request, provider: str):
-    return PlaylistService(request.app.state.settings, request.app.state.music_db).browse(provider)
+    try:
+        return PlaylistService(request.app.state.settings, request.app.state.music_db).browse(provider)
+    except TargetAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @router.get("/api/playlist-versions")
 def playlist_versions(request: Request, provider: str, playlist_id: str):
-    if provider == "musify":
+    if provider == "musify" or ":" in provider:
         rows = request.app.state.music_db.collection_versions(playlist_id)
         with request.app.state.music_db.connect() as conn:
             payloads = {row["id"]: json.loads(conn.execute(
@@ -38,7 +42,8 @@ def playlist_versions(request: Request, provider: str, playlist_id: str):
 
 @router.post("/api/playlist-versions/restore")
 def restore_playlist_version(request: Request, body: dict = Body(...)):
-    if str(body.get("provider")) == "musify":
+    provider = str(body.get("provider"))
+    if provider == "musify" or ":" in provider:
         version_id = str(body.get("captured_at") or "")
         with request.app.state.music_db.connect() as conn:
             version = conn.execute("SELECT * FROM collection_versions WHERE id=?", (version_id,)).fetchone()

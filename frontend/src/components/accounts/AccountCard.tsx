@@ -46,7 +46,8 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
   const [error, setError] = useState<string | null>(null)
 
   const isConnected = account.state === 'connected' || account.state === 'expired'
-  const logoId = serviceLogoId(account.id)
+  const visualProvider = account.provider ?? account.id
+  const logoId = serviceLogoId(visualProvider)
 
   async function disconnect() {
     setDisconnecting(true)
@@ -80,17 +81,17 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
             className="grid size-11 shrink-0 place-items-center overflow-hidden rounded-card border border-border bg-surface-2"
             aria-hidden="true"
           >
-            <ServiceLogo service={logoId} className={cn('size-6', tagText(account.id))} />
+            <ServiceLogo service={logoId} className={cn('size-6', tagText(visualProvider))} />
           </span>
         ) : (
-          <span className={cn('size-2.5 shrink-0 rounded-full', tagDot(account.id))} aria-hidden="true" />
+          <span className={cn('size-2.5 shrink-0 rounded-full', tagDot(visualProvider))} aria-hidden="true" />
         )}
         <h3 className="text-base font-bold text-text">{account.name}</h3>
         <span className="font-mono text-[10px] tracking-wide text-text-3">{account.local_snapshot ? 'LOCAL BACKUP' : AUTH_KIND_LABELS[account.auth_kind]}</span>
         <StatusPill state={account.state} className="ml-auto" />
       </div>
 
-      <p className="text-[13px] leading-relaxed text-text-2">{SERVICE_BLURBS[account.id] ?? ''}</p>
+      <p className="text-[13px] leading-relaxed text-text-2">{SERVICE_BLURBS[visualProvider] ?? ''}</p>
 
       <div className="flex flex-wrap gap-1.5">
         {account.capabilities?.library_read && <span className="rounded-chip bg-info-soft px-2 py-1 font-mono text-[9px] text-info">LIBRARY READ</span>}

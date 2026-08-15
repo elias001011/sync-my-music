@@ -20,6 +20,8 @@ export interface AccountField {
 
 export interface Account {
   id: string
+  /** Connector family; differs from id for a named local account slot. */
+  provider?: string
   name: string
   auth_kind: AuthKind
   fields: AccountField[]
@@ -54,6 +56,15 @@ export interface LibrarySummary {
   listens: number
   accounts: number
   listened_ms: number
+}
+
+export interface LibraryAccount {
+  id: string
+  provider: string
+  label: string
+  status: string
+  auth_mode: string | null
+  is_default: boolean
 }
 
 export interface LibraryTrack {
@@ -146,6 +157,19 @@ export interface MusifyBackupImport {
   playlistTracks: number
   listeningStats: number
   keysFound: string[]
+}
+
+export interface SpotifyExportImport {
+  account_id: string
+  label: string
+  files: number
+  playlists: number
+  playlist_tracks: number
+  liked_tracks: number
+  albums: number
+  artists: number
+  listens_inserted: number
+  listens_duplicates: number
 }
 
 export interface SonoraDevice {

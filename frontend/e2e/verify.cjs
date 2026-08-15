@@ -345,6 +345,10 @@ async function installMocks(page, opts = {}) {
     if (p === '/api/library/summary' && method === 'GET') return json({
       tracks: 2, artists: 1, albums: 1, playlists: 1, listens: 4, accounts: 2, listened_ms: 2400000,
     })
+    if (p === '/api/library/accounts' && method === 'GET') return json([
+      { id: 'musify:default', provider: 'musify', label: 'Musify backup', status: 'connected', auth_mode: 'hive-backup', is_default: true },
+      { id: 'spotify:personal', provider: 'spotify', label: 'Personal', status: 'connected', auth_mode: 'official-export', is_default: false },
+    ])
     if (p === '/api/library/tracks' && method === 'GET') return json({
       total: 2,
       items: [
@@ -639,7 +643,7 @@ async function main() {
         await page.waitForSelector('text=Import a Musify backup')
         await checkOverflow(page, `Library @ ${width} ${theme}`, results)
         if (width === 1280 && theme === 'light') {
-          await page.locator('input[type="file"]').setInputFiles({
+          await page.locator('input[accept^=".hive"]').setInputFiles({
             name: 'user.hive', mimeType: 'application/octet-stream', buffer: Buffer.from('hive fixture'),
           })
           await page.getByRole('button', { name: 'Import into SYNC' }).click()
@@ -1807,6 +1811,7 @@ async function main() {
       await page.getByLabel('Name', { exact: false }).fill('Family Spotify')
       await page.getByRole('button', { name: 'Create sync', exact: true }).click()
       await page.getByRole('dialog').waitFor({ state: 'hidden' })
+      await page.getByRole('heading', { name: 'Family Spotify', exact: true }).waitFor()
       const newJobVisible = await page.getByRole('heading', { name: 'Family Spotify', exact: true }).isVisible()
       console.log(`${newJobVisible ? 'ok        ' : 'FAIL      '} Creating a sync (POST) adds it to the list`)
       if (!newJobVisible) results.push({ label: 'sync card create', overflow: true })

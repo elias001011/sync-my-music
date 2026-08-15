@@ -52,7 +52,8 @@ def _rest_provider(target_cls, label):
 # `sp` (the Spotify client) is only needed by peers that read/write Spotify.
 _REGISTRY = {
     "spotify": lambda opts, sp, sync_peer=False, songs=None: (
-        SpotifyTarget(sp, opts.spotify_cache_file, sync_peer=sync_peer, songs=songs) if sp is not None else None),
+        SpotifyTarget(sp, opts.spotify_cache_file, sync_peer=sync_peer, songs=songs)
+        if sp is not None or _spotify_cookie_ready() else None),
     "tidal": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(TidalTarget, "TIDAL"),
     "qobuz": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(QobuzTarget, "Qobuz"),
     "deezer": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(DeezerTarget, "Deezer"),
@@ -61,6 +62,12 @@ _REGISTRY = {
     "ytmusic": lambda opts, sp, sync_peer=False, songs=None: ytmusic.build(),
 }
 _SOURCE_ORDER = ["spotify", "tidal", "qobuz", "deezer", "amazon", "apple", "ytmusic"]
+
+
+def _spotify_cookie_ready():
+    from ..config import spotify_write_backend
+    from ..spotify_cookie import configured
+    return spotify_write_backend() == "cookie" and configured()
 
 
 def _disabled():

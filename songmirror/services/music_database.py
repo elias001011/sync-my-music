@@ -297,28 +297,248 @@ class MusicDatabase:
             conn.executescript(SCHEMA)
             conn.execute("PRAGMA optimize")
 
-    def sync_account(self, provider: str, label: str, status: str, auth_mode: str | None = None) -> dict[str, Any]:
+    def sync_account(self, provider: str, label: str, status: str, auth_mode: str | None = None,
+                     account_id: str | None = None, is_default: bool | None = None) -> dict[str, Any]:
         now = _now()
-        account_id = f"{provider}:default"
+        account_id = account_id or f"{provider}:default"
+        if not account_id.startswith(f"{provider}:"):
+            raise ValueError("account_id must be namespaced by provider")
+        default = account_id == f"{provider}:default" if is_default is None else bool(is_default)
         capabilities = PROVIDER_CAPABILITIES.get(provider, {"library_read": False, "playlist_read": False,
                                                                "playlist_create": False, "playlist_write": False})
         with self.connect() as conn:
             conn.execute(
                 """INSERT INTO service_accounts
                    (id, provider, label, status, auth_mode, capabilities, is_default, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET label=excluded.label, status=excluded.status,
                      auth_mode=excluded.auth_mode, capabilities=excluded.capabilities, updated_at=excluded.updated_at""",
-                (account_id, provider, label, status, auth_mode, json.dumps(capabilities), now, now),
+                (account_id, provider, label, status, auth_mode, json.dumps(capabilities), int(default), now, now),
             )
         return {"id": account_id, "provider": provider, "label": label, "status": status,
-                "capabilities": capabilities, "is_default": True}
+                "capabilities": capabilities, "is_default": default}
 
     def accounts(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM service_accounts ORDER BY provider, label").fetchall()
         return [{**dict(row), "capabilities": json.loads(row["capabilities"]),
                  "is_default": bool(row["is_default"])} for row in rows]
+
+    def export_account_backup(self, account_id: str) -> dict[str, Any]:
+        """Portable canonical snapshot for one account, excluding credentials."""
+        with self.connect() as conn:
+            account = conn.execute("SELECT * FROM service_accounts WHERE id=?", (account_id,)).fetchone()
+            if not account:
+                raise KeyError("account not found")
+            service_tracks = conn.execute("SELECT * FROM service_tracks WHERE account_id=?", (account_id,)).fetchall()
+            mirrors = conn.execute("SELECT * FROM collection_mirrors WHERE account_id=?", (account_id,)).fetchall()
+            collection_ids = [row["collection_id"] for row in mirrors]
+            surfaces = conn.execute("SELECT * FROM surface_items WHERE account_id=?", (account_id,)).fetchall()
+            listens = conn.execute("SELECT * FROM listens WHERE account_id=?", (account_id,)).fetchall()
+            aggregates = conn.execute("SELECT * FROM listening_aggregates WHERE account_id=?", (account_id,)).fetchall()
+            track_ids = {row["track_id"] for row in service_tracks} | {row["track_id"] for row in listens} | {
+                row["track_id"] for row in aggregates}
+            collections, items = [], []
+            for collection_id in collection_ids:
+                row = conn.execute("SELECT * FROM collections WHERE id=?", (collection_id,)).fetchone()
+                if row:
+                    collections.append(row)
+                rows = conn.execute("SELECT * FROM collection_items WHERE collection_id=? ORDER BY position",
+                                    (collection_id,)).fetchall()
+                items.extend(rows)
+                track_ids.update(item["track_id"] for item in rows)
+            tracks = [row for track_id in track_ids
+                      for row in [conn.execute("SELECT * FROM tracks WHERE id=?", (track_id,)).fetchone()] if row]
+            artist_ids = {row["artist_id"] for row in tracks if row["artist_id"]}
+            album_ids = {row["album_id"] for row in tracks if row["album_id"]}
+            artists = [row for row_id in artist_ids
+                       for row in [conn.execute("SELECT * FROM artists WHERE id=?", (row_id,)).fetchone()] if row]
+            albums = [row for row_id in album_ids
+                      for row in [conn.execute("SELECT * FROM albums WHERE id=?", (row_id,)).fetchone()] if row]
+        pack = lambda rows: [dict(row) for row in rows]  # noqa: E731
+        return {"format": "sync-account-backup", "version": 1, "created_at": _now(),
+                "account": dict(account), "artists": pack(artists), "albums": pack(albums),
+                "tracks": pack(tracks), "service_tracks": pack(service_tracks),
+                "collections": pack(collections), "collection_mirrors": pack(mirrors),
+                "collection_items": pack(items), "surface_items": pack(surfaces),
+                "listens": pack(listens), "listening_aggregates": pack(aggregates)}
+
+    def restore_account_backup(self, payload: dict[str, Any], account_id: str | None = None,
+                               label: str | None = None) -> dict[str, Any]:
+        """Replace exactly one account from a credential-free portable snapshot."""
+        if payload.get("format") != "sync-account-backup" or payload.get("version") != 1:
+            raise ValueError("unsupported account backup format")
+        source_account = payload.get("account") or {}
+        provider = str(source_account.get("provider") or "").strip()
+        source_id = str(source_account.get("id") or "")
+        target_id = account_id or source_id
+        target_label = (label or source_account.get("label") or provider).strip()
+        if not provider or not target_id.startswith(f"{provider}:"):
+            raise ValueError("backup account/provider namespace is invalid")
+        self.sync_account(provider, target_label, "connected", "sync-account-restore", account_id=target_id)
+        with self.connect() as conn:
+            # UPSERT rather than SQLite REPLACE: REPLACE deletes the old parent
+            # row first and would cascade into other provider accounts that share
+            # the same canonical artist/track/collection.
+            for row in payload.get("artists") or []:
+                conn.execute("""INSERT INTO artists(id, name, sort_name) VALUES (?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_name=excluded.sort_name""",
+                    (row.get("id"), row.get("name"), row.get("sort_name")))
+            for row in payload.get("albums") or []:
+                conn.execute("""INSERT INTO albums(id, title, artist_id, release_year, artwork_url) VALUES (?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET title=excluded.title, artist_id=excluded.artist_id,
+                    release_year=excluded.release_year, artwork_url=excluded.artwork_url""",
+                    (row.get("id"), row.get("title"), row.get("artist_id"), row.get("release_year"), row.get("artwork_url")))
+            for row in payload.get("tracks") or []:
+                conn.execute("""INSERT INTO tracks(id, title, artist_id, album_id, duration_ms, isrc, first_seen_at, last_seen_at)
+                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,
+                    artist_id=excluded.artist_id, album_id=excluded.album_id, duration_ms=excluded.duration_ms,
+                    isrc=excluded.isrc, last_seen_at=excluded.last_seen_at""",
+                    (row.get("id"), row.get("title"), row.get("artist_id"), row.get("album_id"),
+                     row.get("duration_ms"), row.get("isrc"), row.get("first_seen_at"), row.get("last_seen_at")))
+            conn.execute("DELETE FROM surface_items WHERE account_id=?", (target_id,))
+            conn.execute("DELETE FROM service_tracks WHERE account_id=?", (target_id,))
+            conn.execute("DELETE FROM listens WHERE account_id=?", (target_id,))
+            conn.execute("DELETE FROM listening_aggregates WHERE account_id=?", (target_id,))
+            conn.execute("DELETE FROM collection_mirrors WHERE account_id=?", (target_id,))
+            for row in payload.get("collections") or []:
+                conn.execute("""INSERT INTO collections(id, kind, title, description, artwork_url, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, title=excluded.title,
+                    description=excluded.description, artwork_url=excluded.artwork_url, updated_at=excluded.updated_at""",
+                    (row.get("id"), row.get("kind"), row.get("title"), row.get("description"),
+                     row.get("artwork_url"), row.get("created_at"), row.get("updated_at")))
+            collection_ids = {row.get("id") for row in payload.get("collections") or []}
+            for collection_id in collection_ids:
+                conn.execute("DELETE FROM collection_items WHERE collection_id=?", (collection_id,))
+            for row in payload.get("collection_items") or []:
+                conn.execute("INSERT OR REPLACE INTO collection_items VALUES (?,?,?,?)",
+                             (row.get("collection_id"), row.get("track_id"), row.get("position"), row.get("added_at")))
+            for row in payload.get("collection_mirrors") or []:
+                conn.execute("""INSERT OR REPLACE INTO collection_mirrors
+                    (collection_id, account_id, provider_collection_id, provider_url, writable, snapshot, last_pulled_at, last_pushed_at)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (row.get("collection_id"), target_id, row.get("provider_collection_id"), row.get("provider_url"),
+                     row.get("writable", 0), row.get("snapshot"), row.get("last_pulled_at"), row.get("last_pushed_at")))
+            for row in payload.get("service_tracks") or []:
+                conn.execute("INSERT OR REPLACE INTO service_tracks VALUES (?,?,?,?,?,?,?)",
+                             (target_id, row.get("provider_track_id"), row.get("track_id"), row.get("provider_url"),
+                              row.get("metadata", "{}"), row.get("available", 1), row.get("last_seen_at", _now())))
+            for row in payload.get("surface_items") or []:
+                entity_id, surface = row.get("entity_id"), row.get("surface")
+                conn.execute("INSERT OR REPLACE INTO surface_items VALUES (?,?,?,?,?,?,?,?)",
+                             (_stable_id("surface", target_id, surface, entity_id), target_id, surface,
+                              row.get("entity_type"), entity_id, row.get("provider_id"), row.get("added_at"),
+                              row.get("metadata", "{}")))
+            for row in payload.get("listens") or []:
+                event = _stable_id("event", target_id, row.get("source_event_id") or row.get("id"))
+                conn.execute("INSERT OR IGNORE INTO listens VALUES (?,?,?,?,?,?,?,?,?,?)",
+                             (_stable_id("listen", target_id, event), row.get("track_id"), target_id,
+                              row.get("listened_at"), row.get("listened_ms"), provider, event,
+                              row.get("skipped"), row.get("metadata", "{}"), _now()))
+            for row in payload.get("listening_aggregates") or []:
+                conn.execute("INSERT OR REPLACE INTO listening_aggregates VALUES (?,?,?,?,?,?,?,?,?)",
+                             (target_id, row.get("period_start"), row.get("period_end"), row.get("track_id"),
+                              row.get("play_count", 0), row.get("listened_ms", 0), provider,
+                              row.get("metadata", "{}"), _now()))
+        self.prune_listening_history()
+        return {"account_id": target_id, "provider": provider, "label": target_label,
+                "tracks": len(payload.get("service_tracks") or []),
+                "playlists": len(payload.get("collection_mirrors") or []),
+                "listens": len(payload.get("listens") or []),
+                "aggregates": len(payload.get("listening_aggregates") or [])}
+
+    def import_provider_library(self, provider: str, account_id: str, label: str,
+                                playlists: Iterable[dict[str, Any]] = (),
+                                liked_tracks: Iterable[dict[str, Any]] = (),
+                                albums: Iterable[dict[str, Any]] = (),
+                                artists: Iterable[dict[str, Any]] = ()) -> dict[str, int]:
+        """Replace one account's exported library surfaces without touching peers.
+
+        This is the shared restore contract used by provider exports.  The
+        account id is explicit, so importing a second account of the same
+        provider cannot overwrite the first one's playlists or likes.
+        """
+        playlists, liked_tracks, albums, artists = map(list, (playlists, liked_tracks, albums, artists))
+        self.sync_account(provider, label, "connected", "official-export", account_id=account_id)
+        now = _now()
+        counts = {"playlists": 0, "playlist_tracks": 0, "liked_tracks": 0,
+                  "albums": 0, "artists": 0}
+        with self.connect() as conn:
+            # A provider export is a snapshot for these surfaces. Only this
+            # account is replaced; canonical tracks shared by other accounts stay.
+            conn.execute("DELETE FROM surface_items WHERE account_id=? AND surface IN ('liked_tracks','saved_albums','followed_artists')",
+                         (account_id,))
+            for metadata in liked_tracks:
+                track_id = self._upsert_track(conn, metadata)
+                provider_id = str(metadata.get("provider_track_id") or metadata.get("uri") or track_id)
+                conn.execute(
+                    """INSERT INTO service_tracks(account_id, provider_track_id, track_id, metadata, available, last_seen_at)
+                       VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(account_id, provider_track_id) DO UPDATE SET
+                       track_id=excluded.track_id, metadata=excluded.metadata, available=1, last_seen_at=excluded.last_seen_at""",
+                    (account_id, provider_id, track_id, json.dumps(metadata, ensure_ascii=False), now))
+                conn.execute(
+                    """INSERT OR REPLACE INTO surface_items
+                       (id, account_id, surface, entity_type, entity_id, provider_id, added_at, metadata)
+                       VALUES (?, ?, 'liked_tracks', 'track', ?, ?, ?, ?)""",
+                    (_stable_id("surface", account_id, "liked_tracks", track_id), account_id, track_id,
+                     provider_id, now, json.dumps(metadata, ensure_ascii=False)))
+                counts["liked_tracks"] += 1
+            for surface, entity_type, values in (("saved_albums", "album", albums),
+                                                  ("followed_artists", "artist", artists)):
+                for metadata in values:
+                    name = str(metadata.get("name") or metadata.get("album") or metadata.get("artist") or "Unknown")
+                    provider_id = str(metadata.get("provider_id") or metadata.get("uri") or name)
+                    entity_id = _stable_id(entity_type, provider, provider_id, name)
+                    conn.execute(
+                        """INSERT OR REPLACE INTO surface_items
+                           (id, account_id, surface, entity_type, entity_id, provider_id, added_at, metadata)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (_stable_id("surface", account_id, surface, entity_id), account_id, surface,
+                         entity_type, entity_id, provider_id, now, json.dumps(metadata, ensure_ascii=False)))
+                    counts["albums" if entity_type == "album" else "artists"] += 1
+
+            existing = conn.execute("SELECT collection_id FROM collection_mirrors WHERE account_id=?", (account_id,)).fetchall()
+            imported_ids = set()
+            for playlist in playlists:
+                provider_id = str(playlist.get("provider_id") or playlist.get("id") or playlist.get("name") or uuid.uuid4())
+                collection_id = _stable_id("collection", account_id, provider_id)
+                imported_ids.add(collection_id)
+                old = conn.execute("SELECT track_id, position, added_at FROM collection_items WHERE collection_id=? ORDER BY position",
+                                   (collection_id,)).fetchall()
+                if old:
+                    version_id = _stable_id("version", collection_id, now, len(old))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO collection_versions(id, collection_id, reason, created_at, item_count, items) VALUES (?, ?, 'before-provider-restore', ?, ?, ?)",
+                        (version_id, collection_id, now, len(old), json.dumps([dict(row) for row in old])))
+                conn.execute(
+                    """INSERT INTO collections(id, kind, title, description, created_at, updated_at)
+                       VALUES (?, 'playlist', ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+                       title=excluded.title, description=excluded.description, updated_at=excluded.updated_at""",
+                    (collection_id, str(playlist.get("name") or "Untitled playlist"),
+                     str(playlist.get("description") or ""), now, now))
+                conn.execute(
+                    """INSERT INTO collection_mirrors(collection_id, account_id, provider_collection_id, writable, snapshot, last_pulled_at)
+                       VALUES (?, ?, ?, 0, ?, ?) ON CONFLICT(collection_id, account_id) DO UPDATE SET
+                       provider_collection_id=excluded.provider_collection_id, snapshot=excluded.snapshot,
+                       last_pulled_at=excluded.last_pulled_at""",
+                    (collection_id, account_id, provider_id, str(playlist.get("snapshot") or ""), now))
+                conn.execute("DELETE FROM collection_items WHERE collection_id=?", (collection_id,))
+                for position, metadata in enumerate(playlist.get("tracks") or []):
+                    track_id = self._upsert_track(conn, metadata)
+                    provider_track_id = str(metadata.get("provider_track_id") or metadata.get("uri") or track_id)
+                    conn.execute(
+                        """INSERT INTO service_tracks(account_id, provider_track_id, track_id, metadata, available, last_seen_at)
+                           VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(account_id, provider_track_id) DO UPDATE SET
+                           track_id=excluded.track_id, metadata=excluded.metadata, available=1, last_seen_at=excluded.last_seen_at""",
+                        (account_id, provider_track_id, track_id, json.dumps(metadata, ensure_ascii=False), now))
+                    conn.execute("INSERT INTO collection_items(collection_id, track_id, position, added_at) VALUES (?, ?, ?, ?)",
+                                 (collection_id, track_id, position, metadata.get("added_at")))
+                    counts["playlist_tracks"] += 1
+                counts["playlists"] += 1
+            for row in existing:
+                if row["collection_id"] not in imported_ids:
+                    conn.execute("DELETE FROM collections WHERE id=?", (row["collection_id"],))
+        return counts
 
     def _upsert_track(self, conn: sqlite3.Connection, metadata: dict[str, Any]) -> str:
         title = str(metadata.get("track_name") or metadata.get("title") or "Unknown track").strip()
@@ -435,37 +655,36 @@ class MusicDatabase:
             conn.execute("UPDATE collections SET updated_at=? WHERE id=?", (_now(), collection_id))
         return {"collection_id": collection_id, "restored_items": len(items)}
 
-    def import_listens(self, payloads: Iterable[dict[str, Any]], source: str = "listenbrainz") -> dict[str, int]:
+    def import_listens(self, payloads: Iterable[dict[str, Any]], source: str = "listenbrainz",
+                       account_id: str | None = None, account_label: str | None = None) -> dict[str, int]:
         inserted = duplicate = 0
+        account_id = account_id or f"{source}:default"
+        self.sync_account(source, account_label or source.replace("ytmusic", "YouTube Music").title(),
+                          "connected", "history-import", account_id=account_id)
         with self.connect() as conn:
             for payload in payloads:
                 metadata = payload.get("track_metadata") or payload
                 listened_at = int(payload.get("listened_at") or _now())
                 extra = metadata.get("additional_info") or {}
-                event_id = str(extra.get("recording_msid") or extra.get("submission_client") or "").strip() or None
-                fingerprint = event_id or _stable_id(
-                    "listen", source, listened_at, metadata.get("artist_name"), metadata.get("track_name"),
+                event_id = str(payload.get("source_event_id") or extra.get("recording_msid") or "").strip() or None
+                fingerprint = _stable_id(
+                    "event", account_id, event_id or "", listened_at,
+                    metadata.get("artist_name"), metadata.get("track_name"), payload.get("listened_ms") or "",
                 )
                 listen_id = _stable_id("listen", source, fingerprint)
                 track_id = self._upsert_track(conn, metadata)
-                duration = extra.get("duration_ms") or metadata.get("duration_ms")
+                explicit_listened_ms = payload.get("listened_ms")
+                duration = explicit_listened_ms or extra.get("duration_ms") or metadata.get("duration_ms")
                 if duration:
-                    duration = int(float(duration) * 1000) if float(duration) < 10_000 else int(float(duration))
-                account_id = f"{source}:default"
-                if not conn.execute("SELECT 1 FROM service_accounts WHERE id=?", (account_id,)).fetchone():
-                    capabilities = PROVIDER_CAPABILITIES.get(source, {})
-                    now = _now()
-                    conn.execute(
-                        "INSERT INTO service_accounts VALUES (?, ?, ?, NULL, 'connected', 'scrobble', ?, 1, ?, ?)",
-                        (account_id, source, source.replace("ytmusic", "YouTube Music").title(), json.dumps(capabilities), now, now),
-                    )
+                    duration = (int(float(duration)) if explicit_listened_ms is not None else
+                                int(float(duration) * 1000) if float(duration) < 10_000 else int(float(duration)))
                 cur = conn.execute(
                     """INSERT OR IGNORE INTO listens
                        (id, track_id, account_id, listened_at, listened_ms, source, source_event_id,
                         skipped, metadata, imported_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (listen_id, track_id, account_id, listened_at, duration, source, fingerprint,
-                     extra.get("skipped"), json.dumps(payload, ensure_ascii=False), _now()),
+                     payload.get("skipped", extra.get("skipped")), json.dumps(payload, ensure_ascii=False), _now()),
                 )
                 if cur.rowcount:
                     inserted += 1
@@ -475,15 +694,17 @@ class MusicDatabase:
         return {"inserted": inserted, "duplicates": duplicate}
 
     def replace_listening_aggregates(self, source: str, entries: Iterable[dict[str, Any]],
-                                     periods: Iterable[tuple[int, int]] = ()) -> dict[str, int]:
+                                     periods: Iterable[tuple[int, int]] = (), account_id: str | None = None,
+                                     account_label: str | None = None) -> dict[str, int]:
         """Upsert provider totals for a period; repeated imports replace counts.
 
         This is deliberately separate from ``listens``.  A monthly Wrapped
         export saying 40 minutes after an earlier 20-minute export means 40,
         never 60.
         """
-        account_id = f"{source}:default"
-        self.sync_account(source, source.replace("ytmusic", "YouTube Music").title(), "connected", "aggregate-import")
+        account_id = account_id or f"{source}:default"
+        self.sync_account(source, account_label or source.replace("ytmusic", "YouTube Music").title(),
+                          "connected", "aggregate-import", account_id=account_id)
         entries = list(entries)
         replaced = 0
         with self.connect() as conn:

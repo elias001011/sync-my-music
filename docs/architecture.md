@@ -56,9 +56,15 @@ hashes, and SQLite integrity, runs through the same exclusive queue as syncs,
 and keeps the latest three pre-restore recovery copies.
 
 Exports are not encrypted and can contain credentials. Spotify's `sp_dc` web
-session cookie is therefore always excluded and cookie write mode is reset to
+session cookie is therefore always excluded and Web/cookie mode is reset to
 OAuth in the portable backup. Restore the ZIP only on a trusted machine and
 re-enable cookie mode explicitly afterward.
+
+The Library also exposes smaller `sync-account-backup` archives. They contain
+one provider account's canonical tracks, playlists, surfaces and recap rows but
+never connector credentials. Restoring a named slot replaces only that account;
+manual Spotify/Musify/Sonora slots remain independently exportable and usable as
+read-only transfer sources.
 
 Pano Scrobbler or Web Scrobbler can submit individual plays to
 `http://<server>:8080/1/submit-listens`. Set `SCROBBLE_TOKEN` to require an

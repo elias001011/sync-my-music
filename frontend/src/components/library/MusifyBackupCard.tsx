@@ -9,6 +9,7 @@ import type { MusifyBackupImport } from '@/types'
 export function MusifyBackupCard({ onImported }: { onImported: () => void | Promise<void> }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
+  const [label, setLabel] = useState('Musify backup')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<MusifyBackupImport | null>(null)
@@ -18,7 +19,7 @@ export function MusifyBackupCard({ onImported }: { onImported: () => void | Prom
     setBusy(true)
     setError(null)
     try {
-      const next = await api.restoreMusifyBackup(file)
+      const next = await api.restoreMusifyBackup(file, label.trim())
       setResult(next)
       await onImported()
     } catch (err) {
@@ -42,7 +43,12 @@ export function MusifyBackupCard({ onImported }: { onImported: () => void | Prom
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-control border border-border bg-inset p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-control border border-border bg-inset p-3">
+        <label className="flex min-w-48 flex-1 flex-col gap-1.5 text-xs font-medium text-text-2">
+          Account label
+          <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Musify backup"
+            className="h-10 rounded-control border border-border-strong bg-field px-3 text-sm text-text" />
+        </label>
         <input
           ref={inputRef}
           type="file"
@@ -60,13 +66,14 @@ export function MusifyBackupCard({ onImported }: { onImported: () => void | Prom
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-3">
           {file?.name ?? 'No backup selected'}
         </span>
-        <Button loading={busy} disabled={!file} onClick={() => void upload()}>Import into SYNC</Button>
+        <Button loading={busy} disabled={!file || !label.trim()} onClick={() => void upload()}>Import into SYNC</Button>
       </div>
 
       <p className="text-[11px] leading-relaxed text-text-3">
         You may also upload a ZIP containing one user.hive. settings.hive is intentionally ignored because it
         contains preferences, not portable music data. Reimporting replaces Musify surfaces and monthly recap
-        totals; it does not add the same month twice. Previous playlist contents are versioned first.
+        totals; it does not add the same month twice. Previous playlist contents are versioned first. Different labels
+        create isolated Musify account slots; reuse a label to update the same device/account.
       </p>
       {error && <p role="alert" className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
       {result && (

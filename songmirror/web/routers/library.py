@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import io
 import json
 import os
 import random
+import re
 import time
 import zipfile
 from collections import defaultdict
 from datetime import datetime
 
 import requests
-from fastapi import APIRouter, Body, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from ...engine.logs import Event
@@ -25,8 +27,21 @@ from ...services.musify import (
     listening_entries_from_stats,
     listening_periods_from_stats,
 )
+from ...services.spotify_export import MAX_SPOTIFY_EXPORT_BYTES, import_spotify_export
+from ...services.sonora import SonoraAdapter
 
 router = APIRouter()
+
+
+def _account_slot(provider: str, label: str, requested: str | None, default_label: str) -> str:
+    if requested:
+        if not requested.startswith(f"{provider}:"):
+            raise HTTPException(status_code=400, detail=f"account_id must start with {provider}:")
+        return requested
+    if label == default_label:
+        return f"{provider}:default"
+    slug = re.sub(r"[^a-z0-9]+", "-", label.casefold()).strip("-")[:32] or "account"
+    return f"{provider}:{slug}-{hashlib.sha256(label.casefold().encode()).hexdigest()[:8]}"
 
 
 def _source_name(payload: dict) -> str:
@@ -71,6 +86,38 @@ def library_tracks(request: Request, q: str = "", limit: int = Query(100, ge=1, 
 @router.get("/api/library/accounts")
 def library_accounts(request: Request):
     return request.app.state.music_db.accounts()
+
+
+@router.get("/api/library/accounts/{account_id}/backup")
+def export_account_backup(request: Request, account_id: str):
+    try:
+        payload = request.app.state.music_db.export_account_backup(account_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("account.json", json.dumps(payload, ensure_ascii=False))
+    buffer.seek(0)
+    safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", account_id)
+    return StreamingResponse(buffer, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="sync_account_{safe}.zip"'})
+
+
+@router.post("/api/library/account-backup")
+async def restore_account_backup(request: Request, backup: UploadFile,
+                                 label: str | None = Form(None), account_id: str | None = Form(None)):
+    raw = await backup.read(256 * 1024 * 1024 + 1)
+    if len(raw) > 256 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="account backup is larger than 256 MiB")
+    try:
+        if raw.startswith(b"PK\x03\x04"):
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                payload = json.loads(archive.read("account.json"))
+        else:
+            payload = json.loads(raw)
+        return request.app.state.music_db.restore_account_backup(payload, account_id, label)
+    except (KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid account backup: {exc}") from exc
 
 
 @router.get("/api/logs")
@@ -127,6 +174,27 @@ async def import_listens(request: Request, body: dict = Body(...)):
     return request.app.state.music_db.import_listens(payloads, source)
 
 
+@router.post("/api/spotify/export-import")
+async def spotify_export_import(request: Request, backup: UploadFile,
+                                label: str = Form("Spotify export"),
+                                account_id: str | None = Form(None)):
+    """Restore an official Spotify account-data ZIP/JSON into one account slot."""
+    raw = await backup.read(MAX_SPOTIFY_EXPORT_BYTES + 1)
+    if len(raw) > MAX_SPOTIFY_EXPORT_BYTES:
+        raise HTTPException(status_code=413, detail="Spotify export is larger than 512 MiB")
+    try:
+        result = import_spotify_export(request.app.state.music_db, raw, backup.filename or "export.zip",
+                                       label.strip() or "Spotify export", account_id)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.app.state.bus.publish(Event(
+        time.time(), "summary", "spotify",
+        f"Spotify export imported into {result['label']}: {result['playlists']} playlists, "
+        f"{result['listens_inserted']} new listens ({result['listens_duplicates']} duplicates ignored)", result,
+    ))
+    return result
+
+
 @router.post("/api/musify/listening-stats")
 def import_musify_listening_stats(request: Request, body: dict = Body(...)):
     """Import Musify's ``wrappedListeningStats`` as replaceable month snapshots."""
@@ -138,7 +206,8 @@ def import_musify_listening_stats(request: Request, body: dict = Body(...)):
 
 
 @router.post("/api/musify/backup")
-async def musify_backup_restore(request: Request, backup: UploadFile):
+async def musify_backup_restore(request: Request, backup: UploadFile,
+                                label: str = Form("Musify backup"), account_id: str | None = Form(None)):
     """Import Musify's real ``user.hive`` backup into the canonical database.
 
     A zip containing ``user.hive`` is accepted for convenience.  ``settings.hive``
@@ -168,7 +237,8 @@ async def musify_backup_restore(request: Request, backup: UploadFile):
     elif filename.endswith("settings.hive"):
         raise HTTPException(status_code=400, detail="select user.hive; settings.hive contains no music library")
     try:
-        result = MusifyAdapter(request.app.state.music_db).import_backup(raw)
+        slot = _account_slot("musify", label, account_id, "Musify backup")
+        result = MusifyAdapter(request.app.state.music_db, slot, label).import_backup(raw)
     except HiveDecodeError as exc:
         request.app.state.bus.publish(Event(time.time(), "warn", "musify", f"Musify backup rejected: {exc}"))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -224,8 +294,10 @@ async def musify_export(request: Request, body: dict = Body(...)):
 
 
 @router.get("/api/sonora/backup")
-def sonora_backup(request: Request):
-    payload = json.dumps(request.app.state.sonora.adapter.export_backup(), ensure_ascii=False).encode()
+def sonora_backup(request: Request, account_id: str = "sonora:default"):
+    adapter = (request.app.state.sonora.adapter if account_id == request.app.state.sonora.adapter.account_id
+               else SonoraAdapter(request.app.state.music_db, account_id, account_id.split(":", 1)[-1]))
+    payload = json.dumps(adapter.export_backup(), ensure_ascii=False).encode()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("backup.json", payload)
@@ -236,14 +308,18 @@ def sonora_backup(request: Request):
 
 
 @router.post("/api/sonora/backup")
-async def sonora_restore(request: Request, backup: UploadFile):
+async def sonora_restore(request: Request, backup: UploadFile, label: str = Form("Sonora"),
+                         account_id: str | None = Form(None)):
     try:
         raw = await backup.read()
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             data = json.loads(archive.read("backup.json"))
     except (KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="invalid Sonora backup") from exc
-    return request.app.state.sonora.adapter.import_backup(data)
+    slot = _account_slot("sonora", label, account_id, "Sonora")
+    adapter = (request.app.state.sonora.adapter if slot == request.app.state.sonora.adapter.account_id
+               else SonoraAdapter(request.app.state.music_db, slot, label))
+    return adapter.import_backup(data)
 
 
 @router.get("/api/sonora/status")

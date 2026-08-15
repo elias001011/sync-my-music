@@ -308,10 +308,13 @@ def listening_periods_from_stats(stats: Any) -> list[tuple[int, int]]:
 
 
 class MusifyAdapter:
-    account_id = "musify:default"
-
-    def __init__(self, database: MusicDatabase):
+    def __init__(self, database: MusicDatabase, account_id: str = "musify:default",
+                 label: str = "Musify backup"):
         self.db = database
+        if not account_id.startswith("musify:"):
+            raise ValueError("Musify account id must start with musify:")
+        self.account_id = account_id
+        self.label = label
 
     def import_backup(self, raw: bytes) -> dict[str, Any]:
         data = decode_hive_box(raw)
@@ -319,7 +322,7 @@ class MusifyAdapter:
         if not found:
             raise HiveDecodeError("this is not a Musify user.hive backup")
 
-        self.db.sync_account("musify", "Musify backup", "connected", "hive-backup")
+        self.db.sync_account("musify", self.label, "connected", "hive-backup", account_id=self.account_id)
         liked = _items(data.get("likedSongs"))
         recent = _items(data.get("recentlyPlayedSongs"))
         liked_playlists = _items(data.get("likedPlaylists"))
@@ -381,7 +384,7 @@ class MusifyAdapter:
 
             for playlist, folder_name in playlists:
                 provider_id = str(playlist.get("ytid") or _stable_id("musify_playlist", playlist.get("title")))
-                collection_id = _stable_id("playlist", "musify", provider_id)
+                collection_id = _stable_id("playlist", self.account_id, provider_id)
                 imported_collection_ids.add(collection_id)
                 title = str(playlist.get("title") or "Musify playlist")
                 description = f"Imported from Musify folder: {folder_name}" if folder_name else "Imported from Musify"
@@ -421,7 +424,7 @@ class MusifyAdapter:
         periods = listening_periods_from_stats(raw_stats)
         if periods:
             counts["listeningStats"] = self.db.replace_listening_aggregates(
-                "musify", entries, periods=periods
+                "musify", entries, periods=periods, account_id=self.account_id, account_label=self.label
             )["replaced"]
         return {**counts, "keysFound": sorted(found)}
 
@@ -467,10 +470,12 @@ class MusifyCanonicalTarget(MirrorTarget):
     """Read-only transfer source backed by imported Musify playlist mirrors."""
 
     name = "Musify backup"
-    tag = source = "musify"
+    tag = "musify"
 
-    def __init__(self, database: MusicDatabase):
+    def __init__(self, database: MusicDatabase, account_id: str = "musify:default"):
         self.db = database
+        self.account_id = account_id
+        self.source = account_id
         self.cache_file = str(Path(database.path).with_name("musify_transfer_cache.json"))
 
     def browse_playlists(self):
@@ -480,8 +485,9 @@ class MusifyCanonicalTarget(MirrorTarget):
                           cm.provider_collection_id, COUNT(ci.position) track_count
                    FROM collections c JOIN collection_mirrors cm ON cm.collection_id=c.id
                    LEFT JOIN collection_items ci ON ci.collection_id=c.id
-                   WHERE cm.account_id='musify:default'
-                   GROUP BY c.id, cm.provider_collection_id ORDER BY c.title COLLATE NOCASE"""
+                   WHERE cm.account_id=?
+                   GROUP BY c.id, cm.provider_collection_id ORDER BY c.title COLLATE NOCASE""",
+                (self.account_id,)
             ).fetchall()
         return [{**dict(row), "_owned": True} for row in rows]
 
@@ -500,18 +506,18 @@ class MusifyCanonicalTarget(MirrorTarget):
     def playlist_tracks(self, playlist):
         with self.db.connect() as conn:
             mirror = conn.execute(
-                "SELECT snapshot FROM collection_mirrors WHERE collection_id=? AND account_id='musify:default'",
-                (playlist["id"],),
+                "SELECT snapshot FROM collection_mirrors WHERE collection_id=? AND account_id=?",
+                (playlist["id"], self.account_id),
             ).fetchone()
             rows = conn.execute(
                 """SELECT t.id, t.title name, ar.name artist, t.duration_ms, t.isrc,
                           COALESCE((SELECT st.provider_track_id FROM service_tracks st
-                                    WHERE st.account_id='musify:default' AND st.track_id=t.id
+                                    WHERE st.account_id=? AND st.track_id=t.id
                                     ORDER BY st.last_seen_at DESC, st.provider_track_id LIMIT 1), '') provider_track_id,
                           ci.added_at, ci.position
                    FROM collection_items ci JOIN tracks t ON t.id=ci.track_id
                    JOIN artists ar ON ar.id=t.artist_id
-                   WHERE ci.collection_id=? ORDER BY ci.position""", (playlist["id"],)
+                   WHERE ci.collection_id=? ORDER BY ci.position""", (self.account_id, playlist["id"])
             ).fetchall()
         snapshot = json.loads(mirror[0]) if mirror and mirror[0] else {}
         original_items = _items(snapshot.get("list")) if isinstance(snapshot, dict) else []

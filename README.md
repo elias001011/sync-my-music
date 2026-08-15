@@ -133,7 +133,7 @@ bridges for [Musify](https://github.com/gokadzev/Musify) and
 
 | Service / app | Playlist sync | Other surfaces | Authentication / transport |
 | --- | --- | --- | --- |
-| **Spotify** | Read and write | Catalog matching | OAuth; optional `sp_dc` write mode |
+| **Spotify** | Read and write | Official export, history and catalog matching | OAuth or standalone `sp_dc` Web mode |
 | **YouTube Music** | Read and write | Catalog matching | Data API OAuth or browser-session mode |
 | **Apple Music** | Read and write | Catalog metadata | Pasted Bearer + Media-User-Token |
 | **TIDAL** | Read and write | Catalog metadata | Pasted web-player Bearer |
@@ -207,12 +207,16 @@ Already implemented:
 - Musify playlist export and recap snapshot import.
 - Sonora backup-v2 import/export and configurable LAN pairing/sync.
 - Unified recaps, persistent logs, and per-provider pause switches.
+- Official Spotify ZIP/JSON import with idempotent monthly/yearly history.
+- Credential-free backup/restore per provider account, including isolated
+  manual snapshots that can feed one-off transfers.
 
 Still evolving:
 
 - Automatic liked-track, followed-artist, and saved-album adapters for every
   commercial provider.
-- First-class multiple-account configuration in every inherited connector.
+- Multiple simultaneous live credential profiles in scheduled sync jobs (manual
+  restore/import account slots are already isolated and usable as sources).
 - Authentication and authorization suitable for exposing the dashboard outside
   a trusted LAN.
 - More import formats, conflict tooling, integration tests, and refreshed project screenshots.
@@ -435,8 +439,20 @@ Sync My Music refreshes credentials **just in time**, not with a separate token-
 
 ### Spotify
 
-1. Create an app at <https://developer.spotify.com/dashboard> and copy its **Client ID** + **Client Secret**.
-2. Add a redirect URI — the connect wizard shows the exact one, e.g. `http://127.0.0.1:8888/oauth/spotify/callback` (Docker) or `http://127.0.0.1:8080/oauth/spotify/callback` (direct run). Spotify only allows an `http` redirect on the loopback IP, so authorize via `http://127.0.0.1:<port>`, not a LAN IP.
+Choose either connection mode in Accounts:
+
+- **Web/cookie:** paste the `sp_dc` cookie from a signed-in
+  `open.spotify.com` session. It lists the recursive rootlist (including folders
+  and saved playlists), reads playlists, searches the catalog and performs
+  playlist writes without a developer app or Premium. The UI reports an expired
+  or revoked cookie instead of returning an empty playlist list.
+- **OAuth:** create an app at <https://developer.spotify.com/dashboard>, copy its
+  client ID/secret, and register the exact loopback redirect shown by the wizard.
+
+The Library page also imports Spotify's official account-data ZIP/JSON. Playlist
+and Your Library snapshots enter a named account slot; normal and extended
+streaming history feed recaps using stable event fingerprints, so reimporting an
+overlapping export does not add the same play again.
 
 The web UI requests read + write scopes up front (Spotify is a write target in N-way syncs and reverse transfers). The CLI reads Spotify read-only in one-way mode.
 

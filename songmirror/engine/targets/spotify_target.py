@@ -40,7 +40,10 @@ class SpotifyTarget(MirrorTarget):
 
     def _user(self):
         if self._me is None:
-            self._me = spotify._retry(lambda: self._sp.current_user(), "current_user")["id"]
+            if spotify_write_backend() == "cookie":
+                self._me = spotify_cookie.current_user_id()
+            else:
+                self._me = spotify._retry(lambda: self._sp.current_user(), "current_user")["id"]
         return self._me
 
     def _write(self, fn, what):
@@ -57,12 +60,16 @@ class SpotifyTarget(MirrorTarget):
 
     # -- MirrorTarget ----------------------------------------------------------
     def list_playlists(self):
+        if spotify_write_backend() == "cookie":
+            return spotify_cookie.playlists_by_name()
         return spotify.playlists_by_name(self._sp)
 
     def browse_playlists(self):
         # Un-deduped, with `_owned` — so browse lists (and the inherited find_playlist
         # scans) every playlist, including a followed one that shares a name with an
         # owned one. list_playlists() name-dedupes for the sync engine and would hide it.
+        if spotify_write_backend() == "cookie":
+            return spotify_cookie.all_playlists()
         return spotify.all_playlists(self._sp)
 
     def is_editable(self, playlist):
@@ -131,6 +138,13 @@ class SpotifyTarget(MirrorTarget):
         return None, None
 
     def _query(self, q):
+        if spotify_write_backend() == "cookie":
+            try:
+                return spotify_cookie.search_tracks(q, limit=8)
+            except TargetAuthError:
+                raise
+            except Exception:
+                return []
         try:
             res = spotify._retry(lambda: self._sp.search(q=q, type="track", limit=8), "search")
         except spotipy.SpotifyException:

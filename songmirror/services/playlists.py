@@ -13,7 +13,9 @@ from pathlib import Path
 from ..engine import spotify
 from ..engine import archive
 from ..engine.config import parse_args
+from ..engine.config import spotify_write_backend
 from ..engine.targets import build_one
+from ..engine.targets.base import TargetAuthError
 from .settings import _open_private
 
 
@@ -97,11 +99,23 @@ class PlaylistService:
         provider surfaces those by overriding browse_playlists (Spotify does today).
         Jellyfin is browse-only and lists via its own API."""
         self._settings.apply_to_env()
-        if provider_id == "musify":
+        if provider_id == "musify" or provider_id.startswith("musify:"):
             if self._database is None:
                 return []
             from .musify import MusifyCanonicalTarget
-            target = MusifyCanonicalTarget(self._database)
+            account_id = "musify:default" if provider_id == "musify" else provider_id
+            target = MusifyCanonicalTarget(self._database, account_id)
+            return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
+                     "count": target.playlist_count(pl), "image": pl.get("image") or "",
+                     "owned": True} for pl in target.browse_playlists()]
+        if ":" in provider_id:
+            if self._database is None:
+                return []
+            from .canonical_target import CanonicalAccountTarget
+            account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
+            if not account:
+                return []
+            target = CanonicalAccountTarget(self._database, provider_id, account["label"])
             return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
                      "count": target.playlist_count(pl), "image": pl.get("image") or "",
                      "owned": True} for pl in target.browse_playlists()]
@@ -111,14 +125,18 @@ class PlaylistService:
             return sorted(rows, key=lambda r: (r["name"] or "").casefold())
         opts = parse_args([])
         try:
-            sp = spotify.client() if provider_id == "spotify" else None  # only the Spotify target needs a client
+            sp = (spotify.client() if provider_id == "spotify" and spotify_write_backend() != "cookie" else None)
             target = build_one(provider_id, opts, sp)
+        except TargetAuthError:
+            raise
         except Exception:
             return []  # e.g. Spotify not authorized yet -> nothing to browse
         if target is None:
             return []
         try:
             playlists = target.browse_playlists()
+        except TargetAuthError:
+            raise
         except Exception:
             return []
         rows = [{"id": _pl_id(pl), "name": _pl_name(pl), "count": target.playlist_count(pl),
@@ -178,7 +196,7 @@ class PlaylistService:
         self._settings.apply_to_env()
         opts = parse_args([])
         try:
-            sp = spotify.client() if provider_id == "spotify" else None
+            sp = (spotify.client() if provider_id == "spotify" and spotify_write_backend() != "cookie" else None)
             return build_one(provider_id, opts, sp), opts
         except Exception:
             return None, opts

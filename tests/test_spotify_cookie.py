@@ -98,6 +98,42 @@ def test_reads_route_to_cookie_when_enabled(monkeypatch):
     assert t.playlist_tracks({"id": "pl9"}) == [{"id": "x", "_via": "pl9"}]
 
 
+def test_cookie_mode_lists_nested_rootlist_and_searches_without_spotipy(monkeypatch):
+    from songmirror.engine import spotify_cookie as sc
+
+    monkeypatch.setenv("SPOTIFY_WRITE_BACKEND", "cookie")
+    monkeypatch.setattr(sc, "current_user_id", lambda: "me")
+    monkeypatch.setattr(sc, "_spc_headers", lambda: {})
+
+    class RootResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"contents": {"items": [
+                {"uri": "spotify:folder:road", "children": [
+                    {"uri": "spotify:playlist:p1", "attributes": {"name": "Road"},
+                     "owner": {"username": "me"}}]},
+                {"uri": "spotify:playlist:p2"},
+            ]}}
+
+    monkeypatch.setattr(sc.requests, "get", lambda *args, **kwargs: RootResponse())
+    monkeypatch.setattr(sc, "_playlist_details", lambda uri: ("Saved", "someone", 12))
+    playlists = sc.all_playlists()
+    assert [(item["id"], item["name"], item["_owned"]) for item in playlists] == [
+        ("p1", "Road", True), ("p2", "Saved", False)]
+
+    monkeypatch.setattr(sc, "_pf", lambda op, variables: {"searchV2": {"tracks": {"items": [{"item": {"data": {
+        "uri": "spotify:track:t1", "name": "Song", "artists": {"items": [{"profile": {"name": "Artist"}}]},
+        "trackDuration": {"totalMilliseconds": 123000}, "albumOfTrack": {"name": "Album"},
+    }}}]}}})
+    target = SpotifyTarget(None, "cache.json")
+    assert target.list_playlists()["road"]["id"] == "p1"
+    assert target._query("Song Artist") == [{
+        "id": "t1", "uri": "spotify:track:t1", "name": "Song",
+        "artists": [{"name": "Artist"}], "duration_ms": 123000, "album": {"name": "Album"},
+    }]
+
+
 class _Resp:
     def __init__(self, status, tracks=None, body=None, text=""):
         self.status_code, self._tracks, self._body, self.text = status, tracks or [], body, text

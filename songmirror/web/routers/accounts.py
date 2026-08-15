@@ -47,7 +47,7 @@ def list_accounts(request: Request):
             d["configured"] = bool(cur)
             fields.append(d)
         out.append({
-            "id": cid, "name": c.name, "auth_kind": c.auth_kind,
+            "id": cid, "provider": cid, "name": c.name, "auth_kind": c.auth_kind,
             "fields": fields,
             "state": st.state, "detail": st.detail,
             # Browse-only services (Jellyfin) can't be a sync/transfer peer — the
@@ -62,18 +62,33 @@ def list_accounts(request: Request):
     # the user uploads user.hive, so expose it alongside connected services only
     # when that local snapshot actually exists.
     if hasattr(request.app.state, "music_db"):
-        imported = next((row for row in request.app.state.music_db.accounts()
-                         if row["id"] == "musify:default" and row["status"] == "connected"), None)
-        if imported:
+        database_accounts = request.app.state.music_db.accounts()
+        imported_accounts = [row for row in database_accounts
+                             if row["provider"] == "musify" and row["status"] == "connected"]
+        for imported in imported_accounts:
+            public_id = "musify" if imported["id"] == "musify:default" else imported["id"]
             out.append({
-                "id": "musify", "name": "Musify backup", "auth_kind": "token_paste",
-                "fields": [], "state": "connected", "detail": "Imported user.hive snapshot",
+                "id": public_id, "provider": "musify", "name": imported["label"], "auth_kind": "token_paste",
+                "fields": [], "state": "connected", "detail": f"Imported user.hive snapshot · {imported['id']}",
                 "local_snapshot": True,
                 # It can feed a one-off copy, but is not a writable/n-way sync
                 # peer. The UI keeps these two capabilities separate.
                 "transferable": False, "transfer_source": True,
                 "capabilities": PROVIDER_CAPABILITIES["musify"],
                 "enabled": "musify" not in disabled,
+            })
+        for imported in database_accounts:
+            if (imported["provider"] == "musify" or imported["id"] == f"{imported['provider']}:default"
+                    or imported.get("auth_mode") not in {"official-export", "sync-account-restore"}):
+                continue
+            out.append({
+                "id": imported["id"], "provider": imported["provider"], "name": imported["label"],
+                "auth_kind": "token_paste", "fields": [], "state": "connected",
+                "detail": f"Restored local snapshot · {imported['id']}", "local_snapshot": True,
+                "transferable": False, "transfer_source": True,
+                "capabilities": {**PROVIDER_CAPABILITIES.get(imported["provider"], {}),
+                                 "playlist_write": False, "playlist_create": False},
+                "enabled": imported["provider"] not in disabled,
             })
     return out
 
@@ -164,15 +179,14 @@ def ytmusic_disable_browser(request: Request):
 
 @router.post("/api/accounts/spotify/cookie")
 async def spotify_enable_cookie(request: Request, body: dict = Body(...)):
-    """Turn on Spotify's cookie write backend from a pasted sp_dc cookie — the fix
-    for Development-Mode apps that get 403 on playlist create / track edits."""
+    """Use a pasted sp_dc as the complete Spotify Web Player connection."""
     st = _conn(request, "spotify").enable_cookie(body.get("sp_dc", ""))
     return {"state": st.state, "detail": st.detail}
 
 
 @router.delete("/api/accounts/spotify/cookie")
 def spotify_disable_cookie(request: Request):
-    """Revert Spotify writes to the OAuth dev app."""
+    """Revert Spotify to the OAuth dev app."""
     st = _conn(request, "spotify").disable_cookie()
     return {"state": st.state, "detail": st.detail}
 

@@ -515,10 +515,9 @@ export function ConnectWizardModal({ account, open, onClose, onConnected, onChan
             {account.id === 'ytmusic' && <NoQuotaModeSection account={account} onChanged={onChanged} />}
             {account.id === 'spotify' && (
               <p className="rounded-control border border-border bg-inset px-3 py-2.5 text-xs leading-relaxed text-text-3">
-                <strong className="text-text-2">Bidirectional (N-way) sync uses all three:</strong> the OAuth login
-                above, <strong>Cookie write mode</strong> (Spotify reads + writes), and an{' '}
-                <strong>ISRC lookup app</strong> (cross-service track matching). One-way mirroring and one-off transfers
-                need only the OAuth login.
+                <strong className="text-text-2">Choose one connection mode:</strong> OAuth official, or{' '}
+                <strong>Web/cookie</strong> without a developer app. An optional <strong>ISRC lookup app</strong> improves
+                exact cross-service matching during large bidirectional syncs.
               </p>
             )}
             {account.id === 'spotify' && <CookieWriteSection account={account} onChanged={onChanged} />}
@@ -844,13 +843,9 @@ function NoQuotaModeSection({ account, onChanged }: { account: Account; onChange
   )
 }
 
-/** Spotify cookie write mode: paste an sp_dc cookie so playlist writes route
- * through the first-party web client, bypassing the Development-Mode 403s a
- * self-hosted dev app hits on playlist create / track edits. Reads still use the
- * OAuth connection above, so this is an add-on disclosure, collapsed by default
- * (mirrors NoQuotaModeSection). "cookie writes" in the account detail marks it on. */
+/** Spotify Web/cookie mode: a complete first-party web-player connection. */
 function CookieWriteSection({ account, onChanged }: { account: Account; onChanged: () => void }) {
-  const active = (account.detail || '').includes('cookie writes')
+  const active = (account.detail || '').includes('Web/cookie')
   const [spDc, setSpDc] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -866,7 +861,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
     try {
       const res = await api.enableSpotifyCookieMode(spDc)
       if (res.state === 'connected') onChanged()
-      else setError(res.detail || 'Could not enable cookie write mode with that cookie.')
+      else setError(res.detail || 'Could not enable Web/cookie mode with that cookie.')
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -891,7 +886,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
     <details className="group rounded-control border border-border bg-surface-2/40">
       <summary className="flex cursor-pointer select-none items-center gap-2 px-3.5 py-2.5 text-sm font-medium text-text-2">
         <LuClipboardPaste className="size-4 shrink-0 text-text-3" aria-hidden="true" />
-        Cookie write mode
+        Web/cookie mode (no Premium)
         {active && (
           <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-success-soft px-2 text-[10.5px] font-semibold text-success">
             On
@@ -904,9 +899,9 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
       </summary>
       <div className="flex flex-col gap-3 border-t border-border px-3.5 py-3">
         <p className="text-xs leading-relaxed text-text-3">
-          Routes playlist <strong>writes</strong> (create, add, remove) through your Spotify web session instead of
-          the API app — the fix for the “403 · playlist-modify” errors a Development-Mode app hits. Reads still use the
-          OAuth connection above. The cookie lasts about a year.
+          Uses your Spotify web session for <strong>playlist listing, search, create, add and remove</strong>. It does
+          not need Premium or a developer app. If Spotify expires the session, the real cookie error appears here and
+          in Logs. Treat <Code>sp_dc</Code> like a password.
         </p>
 
         {error && <p className="text-xs text-danger">{error}</p>}
@@ -915,7 +910,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
           <>
             <p className="flex items-center gap-1.5 text-xs text-success">
               <LuCheck className="size-3.5 shrink-0" aria-hidden="true" />
-              Cookie write mode is on.
+              Web/cookie mode is on; OAuth is not required.
             </p>
             <Button variant="secondary" size="sm" onClick={() => void disable()} loading={saving} className="w-fit">
               Switch back to OAuth
@@ -944,7 +939,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
               className="w-full rounded-control border border-border-strong bg-field px-3 py-2 font-mono text-xs text-text placeholder:text-text-3 focus:border-accent focus:outline-none"
             />
             <Button size="sm" onClick={() => void enable()} loading={saving} disabled={!spDc.trim()} className="w-fit">
-              Enable cookie write mode
+              Enable Web/cookie mode
             </Button>
           </>
         )}

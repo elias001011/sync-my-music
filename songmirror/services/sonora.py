@@ -28,10 +28,13 @@ DEFAULT_SURFACES = [
 
 
 class SonoraAdapter:
-    def __init__(self, database: MusicDatabase):
+    def __init__(self, database: MusicDatabase, account_id: str = "sonora:default", label: str = "Sonora"):
         self.db = database
-        self.account_id = "sonora:default"
-        self.db.sync_account("sonora", "Sonora", "connected", "backup+p2p")
+        if not account_id.startswith("sonora:"):
+            raise ValueError("Sonora account id must start with sonora:")
+        self.account_id = account_id
+        self.label = label
+        self.db.sync_account("sonora", label, "connected", "backup+p2p", account_id=account_id)
 
     @staticmethod
     def _iso(ts: int | None = None) -> str:
@@ -112,7 +115,8 @@ class SonoraAdapter:
                                        "duration_ms": duration_s * 1000},
                     "videoId": item.get("videoId"),
                 })
-            result = self.db.replace_listening_aggregates("sonora", aggregates)
+            result = self.db.replace_listening_aggregates(
+                "sonora", aggregates, account_id=self.account_id, account_label=self.label)
             stats["history"] = result["replaced"]
         return stats
 
@@ -137,7 +141,8 @@ class SonoraAdapter:
                     "SELECT collection_id FROM collection_mirrors WHERE account_id=? AND provider_collection_id=?",
                     (self.account_id, provider_id),
                 ).fetchone()
-                collection_id = mirror[0] if mirror else _stable_id("playlist", "sonora", provider_id, playlist.get("name"))
+                collection_id = mirror[0] if mirror else _stable_id(
+                    "playlist", self.account_id, provider_id, playlist.get("name"))
                 exists = conn.execute("SELECT 1 FROM collections WHERE id=?", (collection_id,)).fetchone()
             if exists:
                 self.db.snapshot_collection(collection_id, "before-sonora-merge")
@@ -184,7 +189,10 @@ class SonoraAdapter:
             out["followedArtists"] = self._export_surface(conn, "followed_artists") if "followedArtists" in selected else []
             out["likedAlbums"] = self._export_surface(conn, "liked_albums") if "likedAlbums" in selected else []
             out["likedPlaylists"] = self._export_surface(conn, "liked_playlists") if "likedPlaylists" in selected else []
-            playlists = conn.execute("SELECT * FROM collections WHERE kind='playlist' ORDER BY created_at").fetchall()
+            playlists = conn.execute(
+                """SELECT c.* FROM collections c JOIN collection_mirrors cm ON cm.collection_id=c.id
+                   WHERE c.kind='playlist' AND cm.account_id=? ORDER BY c.created_at""",
+                (self.account_id,)).fetchall()
             out["playlists"] = []
             out["playlistEntries"] = {}
             if "playlists" in selected:
@@ -213,7 +221,9 @@ class SonoraAdapter:
                               COUNT(*) play_count, COALESCE(st.provider_track_id, '') video_id
                        FROM listens l JOIN tracks t ON t.id=l.track_id JOIN artists ar ON ar.id=t.artist_id
                        LEFT JOIN service_tracks st ON st.track_id=t.id AND st.account_id=?
-                       GROUP BY t.id ORDER BY played_at DESC LIMIT 500""", (self.account_id,)).fetchall()
+                       WHERE l.account_id=?
+                       GROUP BY t.id ORDER BY played_at DESC LIMIT 500""",
+                    (self.account_id, self.account_id)).fetchall()
                 out["history"] = [
                     {"videoId": r["video_id"], "title": r["title"], "artist": r["artist"],
                      "thumbnailUrl": None, "playedAt": self._iso(r["played_at"]), "playCount": r["play_count"],
@@ -224,9 +234,9 @@ class SonoraAdapter:
         out["settings"] = None
         return out
 
-    @staticmethod
-    def _export_surface(conn, surface: str) -> list[dict[str, Any]]:
-        rows = conn.execute("SELECT metadata FROM surface_items WHERE surface=? ORDER BY added_at", (surface,)).fetchall()
+    def _export_surface(self, conn, surface: str) -> list[dict[str, Any]]:
+        rows = conn.execute("SELECT metadata FROM surface_items WHERE account_id=? AND surface=? ORDER BY added_at",
+                            (self.account_id, surface)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Cookie (sp_dc) write backend for Spotify.
+"""Cookie (sp_dc) web-player backend for Spotify.
 
 A self-hosted Spotify developer app in Development Mode is refused (403) by the
 official API on the *content* surface — creating playlists and adding/removing
@@ -9,8 +9,8 @@ It authenticates as Spotify's own first-party web client via the `sp_dc` cookie
 (spotify_scraper mints the bearer, TOTP and all), which is not subject to the
 dev-app gate. Item add/remove go through the web-player GraphQL API
 ("pathfinder"); playlist creation goes through the official REST endpoint with
-the same first-party token. Only writes route here, and only when
-SPOTIFY_WRITE_BACKEND=cookie — reads stay on the official API + scraper fallback.
+the same first-party token. In cookie mode reads, catalog search and writes all
+route here, so a self-hosted installation does not also require an OAuth app.
 
 Fragility (why the self-heal exists): pathfinder persisted-query hashes rotate
 on each web-player release and a stale one is rejected as PersistedQueryNotFound.
@@ -19,6 +19,7 @@ on that error, so a rotation self-heals instead of hard-failing. The `sp_dc`
 cookie itself lasts about a year; the connector surfaces when it needs renewing.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -47,14 +48,17 @@ _HASHES = {
     "playlist_mut": "47b2a1234b17748d332dd0431534f22450e9ecbb3d5ddcdacbd83368636a0990",
     "playlist_read": "a65e12194ed5fc443a1cdebed5fabe33ca5b07b987185d63c72483867ad13cb4",
     "profile": "b197b5adb4b761690f76ad9d9fb278c14c14e7331f357c04a56e7001af7106e0",
+    "search": "eff59fa0a3d026b88b56fddbcf4bdfa16a186b8175a5c1a358c072e053c2e5b0",
 }
 # Which operation name maps to which hashed document — also drives the re-scrape.
 _OP_DOC = {
     "addToPlaylist": "playlist_mut", "removeFromPlaylist": "playlist_mut",
     "fetchPlaylistContents": "playlist_read", "profileAttributes": "profile",
+    "searchDesktop": "search",
 }
 
 _provider = None   # cached spotify_scraper CookieTokenProvider (lazy)
+_provider_key = None
 _uid = None        # cached cookie-account user id (for rootlist filing)
 _isrc_cache = {}   # track_id -> isrc|None, backfilled from /tracks (see _track_isrcs)
 
@@ -88,12 +92,16 @@ def _sp_dc(soft=False):
 
 
 def _prov():
-    global _provider
-    if _provider is None:
+    global _provider, _provider_key, _uid
+    cookie = _sp_dc()
+    key = hashlib.sha256(cookie.encode()).hexdigest()
+    if _provider is None or _provider_key != key:
         # Imported lazily: spotify_scraper is only pulled in when cookie mode runs.
         from spotify_scraper.auth.cookies import CookieTokenProvider
         from spotify_scraper.http.transport import HttpxTransport
-        _provider = CookieTokenProvider(HttpxTransport(), _sp_dc())
+        _provider = CookieTokenProvider(HttpxTransport(), cookie)
+        _provider_key = key
+        _uid = None
     return _provider
 
 
@@ -221,6 +229,118 @@ def contents(playlist):
     (the mutation deletes by item uid, not track uri)."""
     return [{"uid": it.get("uid"), "uri": ((it.get("itemV2") or {}).get("data") or {}).get("uri")}
             for it in _content_items(playlist)]
+
+
+def _first_text(node, keys):
+    """Find a scalar in Spotify's intentionally unstable rootlist JSON shape."""
+    if isinstance(node, dict):
+        for key in keys:
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in node.values():
+            found = _first_text(value, keys)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = _first_text(value, keys)
+            if found:
+                return found
+    return ""
+
+
+def _rootlist_entries(payload):
+    """Yield playlist-bearing nodes, including playlists nested in folders."""
+    if isinstance(payload, dict):
+        uri = payload.get("uri")
+        if isinstance(uri, str) and uri.startswith("spotify:playlist:"):
+            yield payload
+            return
+        for value in payload.values():
+            yield from _rootlist_entries(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _rootlist_entries(value)
+
+
+def _playlist_details(uri):
+    data = _pf("fetchPlaylistContents", {"uri": uri, "offset": 0, "limit": 1})
+    playlist = data.get("playlistV2") or {}
+    name = _first_text(playlist.get("name"), ("text", "name")) or _first_text(playlist, ("name",))
+    owner_node = playlist.get("ownerV2") or playlist.get("owner") or {}
+    owner_uri = _first_text(owner_node, ("uri", "username", "id"))
+    owner = owner_uri.rsplit(":", 1)[-1] if owner_uri else ""
+    return name, owner, int((playlist.get("content") or {}).get("totalCount") or 0)
+
+
+def all_playlists():
+    """Every owned or saved playlist in the web player's recursive rootlist."""
+    url = f"{_SPCLIENT}/playlist/v2/user/{current_user_id()}/rootlist"
+    r = requests.get(url, headers=_spc_headers(), timeout=REQUEST_TIMEOUT)
+    if r.status_code in (401, 403):
+        raise TargetAuthError("Spotify cookie expired or was revoked. Paste a new sp_dc cookie on Accounts.")
+    r.raise_for_status()
+    out, seen = [], set()
+    for entry in _rootlist_entries(r.json()):
+        uri = entry["uri"]
+        if uri in seen:
+            continue
+        seen.add(uri)
+        name = _first_text(entry.get("attributes") or entry.get("metadata") or {}, ("name", "title"))
+        owner = _first_text(entry.get("owner") or {}, ("username", "id"))
+        total = 0
+        if not name or not owner:
+            detail_name, detail_owner, total = _playlist_details(uri)
+            name, owner = name or detail_name, owner or detail_owner
+        name = name or f"Playlist {uri.rsplit(':', 1)[-1][:8]}"
+        out.append({
+            "id": uri.rsplit(":", 1)[-1], "uri": uri, "name": name,
+            "owner": {"id": owner}, "tracks": {"total": total},
+            "_owned": not owner or owner == current_user_id(),
+        })
+    return out
+
+
+def playlists_by_name():
+    result = {}
+    for playlist in all_playlists():
+        key = playlist["name"].strip().casefold()
+        if key not in result or playlist.get("_owned"):
+            result[key] = playlist
+    return result
+
+
+def search_tracks(query, limit=8):
+    """Search the catalog through the Web Player pathfinder document."""
+    data = _pf("searchDesktop", {
+        "searchTerm": str(query), "offset": 0, "limit": max(1, min(int(limit), 50)),
+        "numberOfTopResults": 5, "includeAudiobooks": False,
+    })
+    tracks = ((data.get("searchV2") or {}).get("tracks") or {}).get("items") or []
+    out = []
+    for wrapper in tracks:
+        raw = wrapper.get("item") or wrapper
+        track = raw.get("data") or raw
+        uri = track.get("uri") or ""
+        if not uri.startswith("spotify:track:"):
+            continue
+        artists_node = track.get("artists") or {}
+        artist_items = artists_node.get("items") if isinstance(artists_node, dict) else artists_node
+        artists = []
+        for item in artist_items or []:
+            artist = item.get("profile") or item.get("data") or item
+            name = artist.get("name") if isinstance(artist, dict) else None
+            if name:
+                artists.append({"name": name})
+        duration = track.get("trackDuration") or {}
+        out.append({
+            "id": uri.rsplit(":", 1)[-1], "uri": uri,
+            "name": track.get("name") or "", "artists": artists,
+            "duration_ms": duration.get("totalMilliseconds") or track.get("duration_ms"),
+            "album": {"name": (track.get("albumOfTrack") or {}).get("name") or ""},
+        })
+    return out
 
 
 def _track_isrcs(ids):
@@ -386,6 +506,11 @@ def current_user_id():
         if not _uid:
             raise TargetAuthError("Couldn't read the Spotify account id from the cookie session.")
     return _uid
+
+
+def validate_session():
+    """Validate the stored cookie and return its account id."""
+    return current_user_id()
 
 
 def _rootlist_add(playlist_uri):
