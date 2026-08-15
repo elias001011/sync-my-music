@@ -243,7 +243,9 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
     "qobuz": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": True},
     "deezer": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": True},
     "jellyfin": {"library_read": True, "playlist_read": True, "playlist_create": False, "playlist_write": False},
-    "musify": {"library_read": False, "playlist_read": False, "playlist_create": True, "playlist_write": False},
+    # Reads come from an uploaded user.hive snapshot. Writes remain the
+    # explicit deep-link export path, never an in-place backup mutation.
+    "musify": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": False},
     "sonora": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": True},
 }
 
@@ -456,7 +458,8 @@ class MusicDatabase:
                     duplicate += 1
         return {"inserted": inserted, "duplicates": duplicate}
 
-    def replace_listening_aggregates(self, source: str, entries: Iterable[dict[str, Any]]) -> dict[str, int]:
+    def replace_listening_aggregates(self, source: str, entries: Iterable[dict[str, Any]],
+                                     periods: Iterable[tuple[int, int]] = ()) -> dict[str, int]:
         """Upsert provider totals for a period; repeated imports replace counts.
 
         This is deliberately separate from ``listens``.  A monthly Wrapped
@@ -468,8 +471,11 @@ class MusicDatabase:
         entries = list(entries)
         replaced = 0
         with self.connect() as conn:
-            periods = {(int(entry["period_start"]), int(entry["period_end"])) for entry in entries}
-            for period_start, period_end in periods:
+            snapshot_periods = {(int(entry["period_start"]), int(entry["period_end"])) for entry in entries}
+            snapshot_periods.update((int(start), int(end)) for start, end in periods)
+            for period_start, period_end in snapshot_periods:
+                if period_end <= period_start:
+                    raise ValueError("period_end must be after period_start")
                 conn.execute(
                     "DELETE FROM listening_aggregates WHERE account_id=? AND period_start=? AND period_end=?",
                     (account_id, period_start, period_end),
@@ -479,8 +485,6 @@ class MusicDatabase:
                 track_id = self._upsert_track(conn, metadata)
                 period_start = int(entry["period_start"])
                 period_end = int(entry["period_end"])
-                if period_end <= period_start:
-                    raise ValueError("period_end must be after period_start")
                 plays = max(0, int(entry.get("play_count") or 0))
                 listened_ms = max(0, int(entry.get("listened_ms") or 0))
                 conn.execute(

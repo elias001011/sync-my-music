@@ -333,6 +333,22 @@ async function installMocks(page, opts = {}) {
     if (p === '/api/settings' && method === 'GET') return json(SETTINGS)
     if (p === '/api/settings' && method === 'PUT') return json({ ok: true })
 
+    if (p === '/api/library/summary' && method === 'GET') return json({
+      tracks: 2, artists: 1, albums: 1, playlists: 1, listens: 4, accounts: 2, listened_ms: 2400000,
+    })
+    if (p === '/api/library/tracks' && method === 'GET') return json({
+      total: 2,
+      items: [
+        { id: 'track-1', title: 'Road Song', artist: 'Driver', album: 'Night Drive', duration_ms: 180000, isrc: null, play_count: 3, last_listened_at: 1784500000 },
+        { id: 'track-2', title: 'Night Song', artist: 'Driver', album: '', duration_ms: 200000, isrc: null, play_count: 1, last_listened_at: 1784500000 },
+      ],
+    })
+    if (p === '/api/musify/backup' && method === 'POST') return json({
+      likedSongs: 1, recentlyPlayedSongs: 1, likedPlaylists: 0, followedArtists: 0,
+      playlists: 1, playlistTracks: 2, listeningStats: 1,
+      keysFound: ['likedSongs', 'customPlaylists', 'wrappedListeningStats'],
+    })
+
     if (p === '/api/sync/status' && method === 'GET') return json(syncStatusFixture(syncsData))
     if (p === '/api/sync/run' && method === 'POST') return json({ queued: true }, 202)
     if (p === '/api/sync/schedule' && method === 'POST') return json(syncStatusFixture(syncsData))
@@ -594,6 +610,20 @@ async function main() {
         await page.waitForSelector('h1:has-text("Accounts")')
         await checkOverflow(page, `Accounts @ ${width} ${theme}`, results)
         if (width !== 320) await shot(page, `accounts-${width}-${theme}`)
+
+        await gotoPage(page, 'Library', width)
+        await page.waitForSelector('h1:has-text("Your music")')
+        await page.waitForSelector('text=Import a Musify backup')
+        await checkOverflow(page, `Library @ ${width} ${theme}`, results)
+        if (width === 1280 && theme === 'light') {
+          await page.locator('input[type="file"]').setInputFiles({
+            name: 'user.hive', mimeType: 'application/octet-stream', buffer: Buffer.from('hive fixture'),
+          })
+          await page.getByRole('button', { name: 'Import into SYNC' }).click()
+          await page.waitForSelector('text=Imported 1 liked songs, 1 playlists, 2 playlist tracks and 1 recap entries.')
+          console.log('ok         Musify user.hive upload refreshes the Library and shows imported counts')
+        }
+        if (width !== 320) await shot(page, `library-${width}-${theme}`)
 
         await gotoPage(page, 'Playlists', width)
         await page.waitForSelector('h1:has-text("Playlists")')

@@ -21,6 +21,7 @@ const SERVICE_BLURBS: Record<string, string> = {
   apple: 'Paste a couple of tokens from the Apple Music web player. No developer account needed.',
   ytmusic: 'Sign in with a Google account using a short code. Approve it from your phone or another tab.',
   jellyfin: 'Optional. Pushes real playlist cover art to your Jellyfin server.',
+  musify: 'Read-only snapshot imported from user.hive. Reimport it from the Library page whenever Musify changes.',
 }
 
 const AUTH_KIND_LABELS: Record<AuthKind, string> = {
@@ -85,7 +86,7 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
           <span className={cn('size-2.5 shrink-0 rounded-full', tagDot(account.id))} aria-hidden="true" />
         )}
         <h3 className="text-base font-bold text-text">{account.name}</h3>
-        <span className="font-mono text-[10px] tracking-wide text-text-3">{AUTH_KIND_LABELS[account.auth_kind]}</span>
+        <span className="font-mono text-[10px] tracking-wide text-text-3">{account.local_snapshot ? 'LOCAL BACKUP' : AUTH_KIND_LABELS[account.auth_kind]}</span>
         <StatusPill state={account.state} className="ml-auto" />
       </div>
 
@@ -113,7 +114,7 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
 
       {error && <p className="text-xs text-danger">{error}</p>}
 
-      <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
+      {!account.local_snapshot && <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <Button variant={isConnected ? 'secondary' : 'primary'} size="sm" onClick={() => setWizardOpen(true)}>
           {isConnected ? 'Reconnect' : 'Connect'}
         </Button>
@@ -125,9 +126,9 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         <Button variant="ghost" size="sm" onClick={() => void toggleEnabled()}>
           {account.enabled === false ? 'Enable connector' : 'Pause connector'}
         </Button>
-      </div>
+      </div>}
 
-      <ConnectWizardModal
+      {!account.local_snapshot && <ConnectWizardModal
         account={account}
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
@@ -136,9 +137,9 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
           onChanged()
         }}
         onChanged={onChanged}
-      />
+      />}
 
-      <ConfirmDialog
+      {!account.local_snapshot && <ConfirmDialog
         open={confirmingDisconnect}
         title={`Disconnect ${account.name}?`}
         description="You can reconnect at any time. Existing playlists on this service won't be deleted."
@@ -147,7 +148,7 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         loading={disconnecting}
         onConfirm={() => void disconnect()}
         onCancel={() => setConfirmingDisconnect(false)}
-      />
+      />}
     </Card>
   )
 }

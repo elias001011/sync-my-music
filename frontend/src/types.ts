@@ -29,6 +29,11 @@ export interface Account {
    * False for browse-only services like Jellyfin, which the download mirror
    * feeds — the sync and transfer pickers filter on this. */
   transferable: boolean
+  /** Read-only sources such as an imported Musify snapshot can feed a one-off
+   * transfer without joining scheduled/n-way sync as a writable peer. */
+  transfer_source?: boolean
+  /** Managed by a local backup importer rather than a connect/disconnect flow. */
+  local_snapshot?: boolean
   capabilities?: ProviderCapabilities
   /** Emergency connector switch. Disabled providers remain in the database but no reads/writes run. */
   enabled?: boolean
@@ -106,6 +111,17 @@ export interface MusifyExportResponse {
   track_count: number
   unmatched: Array<{ name: string; artist: string }>
   deep_link: string
+}
+
+export interface MusifyBackupImport {
+  likedSongs: number
+  recentlyPlayedSongs: number
+  likedPlaylists: number
+  followedArtists: number
+  playlists: number
+  playlistTracks: number
+  listeningStats: number
+  keysFound: string[]
 }
 
 export interface SonoraDevice {
@@ -333,6 +349,8 @@ export interface ProviderPlaylist {
 }
 
 export interface PlaylistVersion {
+  /** Canonical snapshots use an opaque id; provider snapshots keep using their timestamp. */
+  version_id?: string
   captured_at: string
   item_count: number
   items: Array<[string, string, string]>

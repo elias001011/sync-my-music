@@ -16,6 +16,7 @@ import type { PlaylistLink } from '@/types'
 export default function Playlists() {
   const { accounts, loading: accountsLoading, error: accountsError } = useAccounts()
   const connectedAccounts = useMemo(() => accounts?.filter((a) => a.state === 'connected') ?? [], [accounts])
+  const syncAccounts = useMemo(() => connectedAccounts.filter((a) => a.transferable), [connectedAccounts])
   const connectedIds = useMemo(() => connectedAccounts.map((a) => a.id), [connectedAccounts])
   const { entries } = useProviderPlaylists(connectedIds)
   const { links, loading: linksLoading, error: linksError, refresh: refreshLinks } = useLinks()
@@ -75,8 +76,8 @@ export default function Playlists() {
           </div>
           <Button
             onClick={() => setEditorTarget('new')}
-            disabled={connectedAccounts.length < 2}
-            title={connectedAccounts.length < 2 ? 'Connect at least 2 services first' : undefined}
+            disabled={syncAccounts.length < 2}
+            title={syncAccounts.length < 2 ? 'Connect at least 2 writable sync services first' : undefined}
           >
             + New pairing
           </Button>
@@ -104,7 +105,7 @@ export default function Playlists() {
               <LinkCard
                 key={link.id}
                 link={link}
-                accounts={accounts ?? []}
+                accounts={syncAccounts}
                 playlistEntries={entries}
                 onEdit={() => setEditorTarget(link)}
                 onChanged={() => void refreshLinks()}
@@ -123,7 +124,7 @@ export default function Playlists() {
         open={editorTarget !== null}
         onClose={() => setEditorTarget(null)}
         link={editorTarget === 'new' ? null : editorTarget}
-        accounts={accounts ?? []}
+        accounts={syncAccounts}
         playlistEntries={entries}
         onSaved={() => {
           setEditorTarget(null)

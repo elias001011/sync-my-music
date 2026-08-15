@@ -58,6 +58,23 @@ def list_accounts(request: Request):
         })
         if hasattr(request.app.state, "music_db"):
             request.app.state.music_db.sync_account(cid, c.name, st.state, c.auth_kind)
+    # Musify has no remote login. It becomes a read-only transfer source after
+    # the user uploads user.hive, so expose it alongside connected services only
+    # when that local snapshot actually exists.
+    if hasattr(request.app.state, "music_db"):
+        imported = next((row for row in request.app.state.music_db.accounts()
+                         if row["id"] == "musify:default" and row["status"] == "connected"), None)
+        if imported:
+            out.append({
+                "id": "musify", "name": "Musify backup", "auth_kind": "token_paste",
+                "fields": [], "state": "connected", "detail": "Imported user.hive snapshot",
+                "local_snapshot": True,
+                # It can feed a one-off copy, but is not a writable/n-way sync
+                # peer. The UI keeps these two capabilities separate.
+                "transferable": False, "transfer_source": True,
+                "capabilities": PROVIDER_CAPABILITIES["musify"],
+                "enabled": "musify" not in disabled,
+            })
     return out
 
 

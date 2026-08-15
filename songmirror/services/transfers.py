@@ -97,10 +97,11 @@ class TransferService:
     """One-off cross-service copies, serialized with syncs via SyncService. Jobs
     are in-memory and transient."""
 
-    def __init__(self, settings, bus, sync):
+    def __init__(self, settings, bus, sync, database=None):
         self._settings = settings
         self._bus = bus
         self._sync = sync
+        self._database = database
         self._jobs = {}
 
     def submit(self, spec):
@@ -234,7 +235,8 @@ class TransferService:
         self._settings.apply_to_env()
         opts = parse_args([])
         for side, prov in (("source", spec["source_provider"]), ("destination", spec["dest_provider"])):
-            if not is_peer(prov):  # e.g. Jellyfin — browse-only, can't read/write tracks
+            source_only = side == "source" and prov == "musify" and self._database is not None
+            if not is_peer(prov) and not source_only:  # e.g. Jellyfin — browse-only
                 job["status"], job["error"] = "error", f"'{prov}' can't be a transfer {side} — it's a browse-only service."
                 self._emit("warn", f"transfer: {job['error']}", "transfer")
                 return
@@ -284,6 +286,9 @@ class TransferService:
             self._emit("warn", f"transfer failed: {job['error']}", "transfer")
 
     def _build(self, provider_id, opts):
+        if provider_id == "musify" and self._database is not None:
+            from .musify import MusifyCanonicalTarget
+            return MusifyCanonicalTarget(self._database)
         sp = None
         if provider_id == "spotify":
             try:

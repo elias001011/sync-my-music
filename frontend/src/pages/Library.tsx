@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { LuAlbum, LuClock3, LuDisc3, LuMusic2, LuSearch, LuUsers } from 'react-icons/lu'
 
 import { api, errorMessage } from '@/api'
 import { Card } from '@/components/ui/Card'
+import { MusifyBackupCard } from '@/components/library/MusifyBackupCard'
 import type { LibrarySummary, LibraryTrack } from '@/types'
 
 function duration(ms: number | null) {
@@ -18,19 +19,24 @@ export default function Library() {
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  const refresh = useCallback(async () => {
+    try {
+      const [nextSummary, response] = await Promise.all([api.getLibrarySummary(), api.getLibraryTracks(query)])
+      setSummary(nextSummary)
+      setTracks(response.items)
+      setTotal(response.total)
+      setError(null)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }, [query])
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      Promise.all([api.getLibrarySummary(), api.getLibraryTracks(query)])
-        .then(([nextSummary, response]) => {
-          setSummary(nextSummary)
-          setTracks(response.items)
-          setTotal(response.total)
-          setError(null)
-        })
-        .catch((err: unknown) => setError(errorMessage(err)))
+      void refresh()
     }, query ? 180 : 0)
     return () => window.clearTimeout(timer)
-  }, [query])
+  }, [query, refresh])
 
   const stats = [
     { label: 'Tracks', value: summary?.tracks ?? 0, icon: LuMusic2 },
@@ -60,6 +66,8 @@ export default function Library() {
         ))}
       </div>
 
+      <MusifyBackupCard onImported={refresh} />
+
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center gap-3 border-b border-border p-4">
           <div className="relative min-w-56 flex-1">
@@ -70,7 +78,7 @@ export default function Library() {
           <span className="font-mono text-[11px] text-text-3">{total.toLocaleString()} MATCHES</span>
         </div>
         {error ? <p className="m-4 rounded-control bg-danger-soft p-3 text-sm text-danger">{error}</p> : tracks.length === 0 ? (
-          <div className="px-5 py-14 text-center"><p className="font-bold text-text">The canonical library is empty</p><p className="mt-1 text-sm text-text-3">Connect a service, import a Sonora backup, or send listening events to begin.</p></div>
+          <div className="px-5 py-14 text-center"><p className="font-bold text-text">The canonical library is empty</p><p className="mt-1 text-sm text-text-3">Connect a service, import a Musify or Sonora backup, or send listening events to begin.</p></div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[680px] text-left text-sm">

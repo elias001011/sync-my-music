@@ -8,6 +8,7 @@ import type {
   LibrarySummary,
   LibraryTracksResponse,
   MusifyExportResponse,
+  MusifyBackupImport,
   OkResponse,
   PlaylistLink,
   PlaylistRestorePlan,
@@ -82,6 +83,11 @@ export const api = {
     request<import('./types').SyncEvent[]>(`/api/logs?kind=${encodeURIComponent(kind)}&tag=${encodeURIComponent(tag)}&q=${encodeURIComponent(q)}&limit=${limit}`),
   exportMusify: (body: { source_provider: string; playlist_id: string; title?: string }) =>
     request<MusifyExportResponse>('/api/musify/export', json(body)),
+  restoreMusifyBackup: (file: File) => {
+    const form = new FormData()
+    form.append('backup', file)
+    return request<MusifyBackupImport>('/api/musify/backup', { method: 'POST', body: form })
+  },
   getSonoraStatus: () => request<SonoraStatus>('/api/sonora/status'),
   setSonoraEnabled: (enabled: boolean) => request<SonoraStatus>('/api/sonora/status', { method: 'PUT', body: JSON.stringify({ enabled }) }),
   discoverSonora: () => request<Array<{ device_id: string; name: string; ip: string; port: number }>>('/api/sonora/discover', { method: 'POST' }),

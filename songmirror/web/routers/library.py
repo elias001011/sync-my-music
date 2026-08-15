@@ -12,11 +12,19 @@ import time
 import zipfile
 from collections import defaultdict
 from datetime import datetime
-from datetime import timezone
 
 import requests
 from fastapi import APIRouter, Body, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+
+from ...engine.logs import Event
+from ...services.musify import (
+    MAX_BACKUP_BYTES,
+    HiveDecodeError,
+    MusifyAdapter,
+    listening_entries_from_stats,
+    listening_periods_from_stats,
+)
 
 router = APIRouter()
 
@@ -116,41 +124,55 @@ async def import_listens(request: Request, body: dict = Body(...)):
 @router.post("/api/musify/listening-stats")
 def import_musify_listening_stats(request: Request, body: dict = Body(...)):
     """Import Musify's ``wrappedListeningStats`` as replaceable month snapshots."""
-    months = dict(body.get("history") or {})
-    current_key = str(body.get("currentMonthKey") or "")
-    if current_key:
-        months[current_key] = body.get("currentMonth") or {}
-    entries = []
-    for month_key, month in months.items():
-        try:
-            year, month_number = (int(part) for part in month_key.split("-", 1))
-            start = datetime(year, month_number, 1, tzinfo=timezone.utc)
-            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if month_number == 12 else datetime(year, month_number + 1, 1, tzinfo=timezone.utc)
-        except (TypeError, ValueError):
-            continue
-        song_seconds = 0
-        for ytid, song_value in dict((month or {}).get("songs") or {}).items():
-            song = dict(song_value or {})
-            seconds = max(0, int(song.get("seconds") or 0))
-            song_seconds += seconds
-            entries.append({
-                "period_start": int(start.timestamp()), "period_end": int(end.timestamp()),
-                "play_count": max(0, int(song.get("playCount") or song.get("listeningCount") or 0)),
-                "listened_ms": seconds * 1000,
-                "track_metadata": {"track_name": song.get("title") or ytid,
-                                   "artist_name": song.get("artist") or "Unknown artist",
-                                   "additional_info": {"music_service_name": "musify", "video_id": ytid}},
-            })
-        residual = max(0, int((month or {}).get("totalSeconds") or 0) - song_seconds)
-        if residual:
-            entries.append({
-                "period_start": int(start.timestamp()), "period_end": int(end.timestamp()),
-                "play_count": 0, "listened_ms": residual * 1000,
-                "track_metadata": {"track_name": "Other Musify listening", "artist_name": "Musify"},
-            })
-    if not entries:
+    entries = listening_entries_from_stats(body)
+    periods = listening_periods_from_stats(body)
+    if not periods:
         raise HTTPException(status_code=400, detail="no valid Musify month data found")
-    return request.app.state.music_db.replace_listening_aggregates("musify", entries)
+    return request.app.state.music_db.replace_listening_aggregates("musify", entries, periods=periods)
+
+
+@router.post("/api/musify/backup")
+async def musify_backup_restore(request: Request, backup: UploadFile):
+    """Import Musify's real ``user.hive`` backup into the canonical database.
+
+    A zip containing ``user.hive`` is accepted for convenience.  ``settings.hive``
+    is deliberately never imported: it contains app preferences and may contain
+    private connector settings, but no portable music-library data.
+    """
+    raw = await backup.read(MAX_BACKUP_BYTES + 1)
+    if len(raw) > MAX_BACKUP_BYTES:
+        raise HTTPException(status_code=413, detail="Musify backup is larger than 32 MiB")
+    filename = (backup.filename or "").casefold()
+    if filename.endswith(".zip") or raw.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                candidates = [item for item in archive.infolist()
+                              if item.filename.rsplit("/", 1)[-1].casefold() == "user.hive"]
+                if len(candidates) != 1:
+                    raise HTTPException(status_code=400, detail="zip must contain exactly one user.hive")
+                item = candidates[0]
+                if item.file_size > MAX_BACKUP_BYTES:
+                    raise HTTPException(status_code=413, detail="Musify user.hive is larger than 32 MiB")
+                with archive.open(item) as source:
+                    raw = source.read(MAX_BACKUP_BYTES + 1)
+                if len(raw) > MAX_BACKUP_BYTES:
+                    raise HTTPException(status_code=413, detail="Musify user.hive is larger than 32 MiB")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="invalid Musify backup zip") from exc
+    elif filename.endswith("settings.hive"):
+        raise HTTPException(status_code=400, detail="select user.hive; settings.hive contains no music library")
+    try:
+        result = MusifyAdapter(request.app.state.music_db).import_backup(raw)
+    except HiveDecodeError as exc:
+        request.app.state.bus.publish(Event(time.time(), "warn", "musify", f"Musify backup rejected: {exc}"))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.app.state.bus.publish(Event(
+        time.time(), "summary", "musify",
+        f"Musify backup imported: {result['likedSongs']} liked songs, "
+        f"{result['playlists']} playlists, {result['listeningStats']} recap entries",
+        result,
+    ))
+    return result
 
 
 @router.post("/api/musify/export")

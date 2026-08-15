@@ -40,8 +40,8 @@ def create_app(settings=None, bus=None, sync_service=None, links=None, transfers
     syncs = syncs or SyncStore(dir=Path(settings.env_path).parent)
     sync_service = sync_service or SyncService(settings, bus, syncs)
     links = links or LinkStore(dir=Path(settings.env_path).parent)
-    transfers = transfers or TransferService(settings, bus, sync_service)
     music_db = music_db or MusicDatabase(Path(settings.env_path).parent / "sync_music.db")
+    transfers = transfers or TransferService(settings, bus, sync_service, music_db)
     bus.set_archive(music_db.record_event)
     sonora = sonora or SonoraLanService(settings, SonoraAdapter(music_db))
 

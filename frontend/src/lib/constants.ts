@@ -48,6 +48,7 @@ const SERVICE_STYLES: Record<string, ServiceStyle> = {
   yt: { label: 'YouTube Music', dot: 'bg-svc-ytmusic', soft: 'bg-svc-ytmusic-soft', text: 'text-svc-ytmusic' },
   ytmusic: { label: 'YouTube Music', dot: 'bg-svc-ytmusic', soft: 'bg-svc-ytmusic-soft', text: 'text-svc-ytmusic' },
   jellyfin: { label: 'Jellyfin', dot: 'bg-svc-jellyfin', soft: 'bg-svc-jellyfin-soft', text: 'text-svc-jellyfin' },
+  musify: { label: 'Musify', dot: 'bg-accent', soft: 'bg-accent-soft', text: 'text-accent' },
   sync: { label: 'Sync', dot: 'bg-accent', soft: 'bg-accent-soft', text: 'text-accent' },
   local: { label: 'Local files', dot: 'bg-info', soft: 'bg-info-soft', text: 'text-info' },
 }

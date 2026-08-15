@@ -85,8 +85,9 @@ def _pl_image(pl):
 
 
 class PlaylistService:
-    def __init__(self, settings):
+    def __init__(self, settings, database=None):
         self._settings = settings
+        self._database = database
 
     def browse(self, provider_id):
         """[{id, name, count, image, owned}] for one connected provider (empty if
@@ -96,6 +97,14 @@ class PlaylistService:
         provider surfaces those by overriding browse_playlists (Spotify does today).
         Jellyfin is browse-only and lists via its own API."""
         self._settings.apply_to_env()
+        if provider_id == "musify":
+            if self._database is None:
+                return []
+            from .musify import MusifyCanonicalTarget
+            target = MusifyCanonicalTarget(self._database)
+            return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
+                     "count": target.playlist_count(pl), "image": pl.get("image") or "",
+                     "owned": True} for pl in target.browse_playlists()]
         if provider_id == "jellyfin":
             from ..engine import jellyfin
             rows = [{**r, "owned": True} for r in jellyfin.list_playlists()]
