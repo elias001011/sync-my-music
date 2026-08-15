@@ -1,0 +1,146 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+set -u
+
+APP_DIR="${SYNC_APP_DIR:-$HOME/sync-my-music}"
+DATA_DIR="$APP_DIR/data"
+RUNTIME_DIR="$APP_DIR/runtime"
+PID_FILE="$RUNTIME_DIR/sync-server.pid"
+LOG_FILE="$RUNTIME_DIR/sync-server.log"
+PYTHON="$APP_DIR/.venv/bin/python"
+PORT="${SYNC_PORT:-8888}"
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+get_ip() {
+    ip -4 addr show wlan0 2>/dev/null | awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}'
+}
+
+read_pid() {
+    test -f "$PID_FILE" && tr -dc '0-9' < "$PID_FILE"
+}
+
+is_running() {
+    local pid cwd
+    pid="$(read_pid)"
+    test -n "$pid" || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    test "$cwd" = "$APP_DIR"
+}
+
+start_server() {
+    if is_running; then
+        printf "${YELLOW}SYNC já está rodando.${NC}\n"
+        status_server
+        return 0
+    fi
+
+    if test ! -x "$PYTHON"; then
+        printf "${RED}Ambiente Python não encontrado em %s${NC}\n" "$PYTHON"
+        return 1
+    fi
+
+    mkdir -p "$DATA_DIR" "$RUNTIME_DIR"
+    rm -f "$PID_FILE"
+
+    (
+        cd "$APP_DIR" || exit 1
+        nohup setsid env \
+            PYTHONUNBUFFERED=1 \
+            SONGMIRROR_DATA_DIR="$DATA_DIR" \
+            SONGMIRROR_ENV_FILE="$DATA_DIR/app.env" \
+            SONORA_SYNC_HTTP_PORT="$PORT" \
+            "$PYTHON" -m uvicorn songmirror.web:app \
+                --host 0.0.0.0 --port "$PORT" \
+                >>"$LOG_FILE" 2>&1 < /dev/null &
+        echo "$!" > "$PID_FILE"
+    )
+
+    for _ in $(seq 1 20); do
+        if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            printf "${GREEN}SYNC iniciado.${NC}\n"
+            status_server
+            return 0
+        fi
+        if ! is_running; then
+            break
+        fi
+        sleep 1
+    done
+
+    printf "${RED}O SYNC não iniciou. Últimas linhas do log:${NC}\n"
+    tail -n 40 "$LOG_FILE" 2>/dev/null || true
+    return 1
+}
+
+stop_server() {
+    local pid
+    if ! is_running; then
+        rm -f "$PID_FILE"
+        printf "${YELLOW}SYNC já está parado.${NC}\n"
+        return 0
+    fi
+
+    pid="$(read_pid)"
+    printf "${YELLOW}Parando SYNC (PID %s)...${NC}\n" "$pid"
+    kill "$pid" 2>/dev/null || true
+
+    for _ in $(seq 1 15); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+
+    if kill -0 "$pid" 2>/dev/null && is_running; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    printf "${RED}SYNC parado.${NC}\n"
+}
+
+restart_server() {
+    stop_server
+    sleep 1
+    start_server
+}
+
+status_server() {
+    local ip pid health
+    ip="$(get_ip)"
+    ip="${ip:-127.0.0.1}"
+    pid="$(read_pid)"
+    health="indisponível"
+    curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && health="ok"
+
+    printf "${YELLOW}=== SYNC STATUS ===${NC}\n"
+    if is_running; then
+        printf "Processo: ${GREEN}rodando${NC} (PID %s)\n" "$pid"
+    else
+        printf "Processo: ${RED}parado${NC}\n"
+    fi
+    printf "Health:   %s\n" "$health"
+    printf "LAN:      ${GREEN}http://%s:%s${NC}\n" "$ip" "$PORT"
+    printf "Dados:    %s\n" "$DATA_DIR"
+    printf "Log:      %s\n" "$LOG_FILE"
+}
+
+show_logs() {
+    mkdir -p "$RUNTIME_DIR"
+    touch "$LOG_FILE"
+    tail -n "${SYNC_LOG_LINES:-200}" -f "$LOG_FILE"
+}
+
+case "${1:-}" in
+    start) start_server ;;
+    stop) stop_server ;;
+    restart|reset) restart_server ;;
+    status) status_server ;;
+    logs) show_logs ;;
+    *)
+        echo "Uso: sync-server {start|stop|restart|reset|status|logs}"
+        exit 1
+        ;;
+esac

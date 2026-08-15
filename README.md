@@ -277,6 +277,25 @@ uv run uvicorn songmirror.web:app --host 0.0.0.0 --port 8080
 
 > Requires [`uv`](https://docs.astral.sh/uv/) (Python 3.13+). Do not forward this port to the public internet. The Sonora LAN bridge is disabled until you enable it under Accounts.
 
+### Termux server
+
+The Termux control script lives at `deploy/termux/sync-server`. Once installed
+under `$PREFIX/bin/sync-server`, it keeps the database under
+`~/sync-my-music/data`, writes its process log under `~/sync-my-music/runtime`,
+and exposes the UI on home-LAN port `8888` by default.
+
+```bash
+sync-server start    # start in the background
+sync-server stop     # stop without touching data
+sync-server restart  # stop + start
+sync-server reset    # alias for restart; it does not reset the database
+sync-server status   # process, health check, LAN URL and paths
+sync-server logs     # follow the process log (Ctrl+C only exits the viewer)
+```
+
+The service binds to `0.0.0.0` so devices on the same Wi-Fi can reach it, but
+the router should not forward port `8888` to the public internet.
+
 <div align="right">
 
 [![][back-to-top]](#readme-top)
