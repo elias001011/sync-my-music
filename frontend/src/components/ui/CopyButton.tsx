@@ -1,9 +1,11 @@
 import { useState } from 'react'
 
 import { Button } from './Button'
+import { useI18n } from '@/i18n/useI18n'
 
-export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+export function CopyButton({ value, label }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false)
+  const { t } = useI18n()
 
   async function handleCopy() {
     try {
@@ -18,7 +20,7 @@ export function CopyButton({ value, label = 'Copy' }: { value: string; label?: s
 
   return (
     <Button variant="secondary" onClick={() => void handleCopy()} className="shrink-0">
-      {copied ? 'Copied!' : label}
+      {copied ? t('common.copied') : (label ?? t('common.copy'))}
     </Button>
   )
 }

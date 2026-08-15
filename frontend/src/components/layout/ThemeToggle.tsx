@@ -1,4 +1,5 @@
 import { useDarkMode } from '@/hooks/useDarkMode'
+import { useI18n } from '@/i18n/useI18n'
 
 import { Toggle } from '../ui/Toggle'
 
@@ -6,5 +7,6 @@ import { Toggle } from '../ui/Toggle'
  * to localStorage (see useDarkMode). Dark is the default. */
 export function ThemeToggle() {
   const [dark, toggle] = useDarkMode()
-  return <Toggle checked={dark} onChange={toggle} label="Dark theme" />
+  const { t } = useI18n()
+  return <Toggle checked={dark} onChange={toggle} label={t('settings.theme')} />
 }

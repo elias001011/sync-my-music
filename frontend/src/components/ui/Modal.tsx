@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { LuX } from 'react-icons/lu'
 
 import { cn } from '@/lib/cn'
+import { useI18n } from '@/i18n/useI18n'
 
 interface ModalProps {
   open: boolean
@@ -32,6 +33,7 @@ const FOCUSABLE_SELECTOR =
  * narrow viewport for width; from `sm` up it's the conventional centered,
  * rounded dialog. Only the body scrolls — header and footer stay docked. */
 export function Modal({ open, onClose, title, description, children, footer, widthClassName = 'max-w-lg' }: ModalProps) {
+  const { t } = useI18n()
   const dialogRef = useRef<HTMLDivElement>(null)
   // Read onClose through a ref so the focus/scroll-lock effect can depend on
   // `open` alone. Callers usually pass onClose as a fresh arrow each render; if
@@ -80,7 +82,7 @@ export function Modal({ open, onClose, title, description, children, footer, wid
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-overlay sm:items-start sm:p-4 sm:pt-[max(4vh,1rem)]">
-      <button type="button" aria-label="Close dialog" className="absolute inset-0" onClick={onClose} />
+      <button type="button" aria-label={t('common.closeDialog')} className="absolute inset-0" onClick={onClose} />
       <div
         ref={dialogRef}
         role="dialog"
@@ -125,7 +127,7 @@ export function Modal({ open, onClose, title, description, children, footer, wid
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('common.close')}
             className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-text-3 hover:bg-surface-2 hover:text-text-2 sm:size-7"
           >
             <LuX className="size-5" aria-hidden="true" />

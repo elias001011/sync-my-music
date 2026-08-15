@@ -11,6 +11,7 @@ import Settings from './pages/Settings'
 import Sync from './pages/Sync'
 import Transfers from './pages/Transfers'
 import Recaps from './pages/Recaps'
+import { useI18n } from './i18n/useI18n'
 
 export default function App() {
   return (
@@ -32,12 +33,13 @@ export default function App() {
 }
 
 function NotFound() {
+  const { t } = useI18n()
   return (
     <div className="flex flex-col items-center gap-3 px-4 py-16 text-center">
-      <p className="text-display text-xl text-text">Page not found</p>
-      <p className="text-sm text-text-3">That page doesn't exist in Sync My Music.</p>
+      <p className="text-display text-xl text-text">{t('notFound.title')}</p>
+      <p className="text-sm text-text-3">{t('notFound.description')}</p>
       <Link to="/" className={`${BUTTON_BASE_CLASSES} ${BUTTON_SIZE_CLASSES.md} ${BUTTON_VARIANT_CLASSES.primary}`}>
-        Back to Dashboard
+        {t('notFound.back')}
       </Link>
     </div>
   )

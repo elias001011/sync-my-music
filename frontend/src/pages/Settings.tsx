@@ -4,6 +4,7 @@ import { LuArrowRight, LuDownload, LuUpload } from 'react-icons/lu'
 
 import { api, errorMessage } from '@/api'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
+import { LanguageSelect } from '@/components/settings/LanguageSelect'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { SelectField } from '@/components/ui/SelectField'
@@ -11,6 +12,7 @@ import { LoadingStatus, Skeleton } from '@/components/ui/Skeleton'
 import { SettingsGroup } from '@/components/ui/SettingsGroup'
 import { TextField } from '@/components/ui/TextField'
 import { useSettings } from '@/hooks/useSettings'
+import { useI18n } from '@/i18n/useI18n'
 import { cn } from '@/lib/cn'
 import { DOWNLOAD_FORMAT_OPTIONS } from '@/lib/constants'
 import type { Settings as SettingsMap } from '@/types'
@@ -29,6 +31,7 @@ const DEFAULTS: SettingsMap = {
 }
 
 export default function Settings() {
+  const { t } = useI18n()
   const { settings, loading, error, refresh } = useSettings()
   const [form, setForm] = useState<SettingsMap | null>(null)
   const [saving, setSaving] = useState(false)
@@ -91,30 +94,33 @@ export default function Settings() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-bold tracking-tight text-text sm:text-[22px]">Settings</h1>
+        <h1 className="text-xl font-bold tracking-tight text-text sm:text-[22px]">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-text-3">
-          Profile, appearance, and the shared download folder. Provider credentials live on the Accounts page.
+          {t('settings.description')}
         </p>
         <Link
           to="/sync"
           className="mt-1.5 inline-flex items-center gap-1 text-[13px] font-semibold text-accent hover:text-accent-hover"
         >
-          Manage your syncs on the Sync tab
+          {t('settings.manageSyncs')}
           <LuArrowRight className="size-3.5" aria-hidden="true" />
         </Link>
       </div>
 
-      {error && <p className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">Could not load settings: {error}</p>}
+      {error && <p className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">{t('settings.loadError', { error })}</p>}
 
-      <SettingsGroup label="APPEARANCE">
-        <ThemeToggle />
+      <SettingsGroup label={t('settings.appearance')}>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <ThemeToggle />
+          <LanguageSelect />
+        </div>
         <p className="text-xs leading-relaxed text-text-3">
-          Applies instantly and is remembered on this device, separate from your account settings.
+          {t('settings.appearanceHelp')}
         </p>
       </SettingsGroup>
 
       {loading && !form ? (
-        <LoadingStatus label="Loading settings…">
+        <LoadingStatus label={t('settings.loading')}>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Skeleton className="h-32 w-full rounded-card" />
             <Skeleton className="h-40 w-full rounded-card" />
@@ -129,32 +135,31 @@ export default function Settings() {
           }}
         >
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-            <SettingsGroup label="PROFILE">
+            <SettingsGroup label={t('settings.profile')}>
               <TextField
-                label="Display name"
-                help="Optional, used only for the dashboard's greeting."
-                placeholder="e.g. Maya"
+                label={t('settings.displayName')}
+                help={t('settings.displayNameHelp')}
+                placeholder={t('settings.displayNamePlaceholder')}
                 value={form.DISPLAY_NAME ?? ''}
                 onChange={(e) => setField('DISPLAY_NAME', e.target.value)}
               />
             </SettingsGroup>
 
-            <SettingsGroup label="DOWNLOAD MIRROR">
+            <SettingsGroup label={t('settings.downloadMirror')}>
               <p className="text-xs leading-relaxed text-text-3">
-                Optional: where offline audio copies land for any sync that opts in ("Download this sync's
-                playlists", on the Sync tab).
+                {t('settings.downloadDescription')}
               </p>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <TextField
-                  label="Download folder"
-                  help="Leave empty to disable local downloads for every sync."
-                  placeholder="e.g. /music or D:\Music"
+                  label={t('settings.downloadFolder')}
+                  help={t('settings.downloadFolderHelp')}
+                  placeholder={t('settings.downloadFolderPlaceholder')}
                   value={form.DOWNLOAD_DIR ?? ''}
                   onChange={(e) => setField('DOWNLOAD_DIR', e.target.value)}
                 />
                 <SelectField
-                  label="Audio format"
-                  help="Only used when a download folder is set above."
+                  label={t('settings.audioFormat')}
+                  help={t('settings.audioFormatHelp')}
                   options={DOWNLOAD_FORMAT_OPTIONS}
                   value={form.LOCAL_MIRROR_FORMAT ?? ''}
                   onChange={(e) => setField('LOCAL_MIRROR_FORMAT', e.target.value)}
@@ -213,16 +218,16 @@ export default function Settings() {
               className={cn('size-2 shrink-0 rounded-full', dirty ? 'bg-warning' : 'bg-success')}
               aria-hidden="true"
             />
-            <span className="text-[13px] text-text-2">{dirty ? 'Unsaved changes' : justSaved ? 'Saved' : 'Up to date'}</span>
+            <span className="text-[13px] text-text-2">{dirty ? t('common.unsavedChanges') : justSaved ? t('common.saved') : t('common.upToDate')}</span>
             {saveError && <span className="text-xs text-danger">{saveError}</span>}
             <div className="ml-auto flex gap-2">
               {dirty && (
                 <Button type="button" variant="secondary" size="sm" onClick={discard} disabled={saving}>
-                  Discard
+                  {t('common.discard')}
                 </Button>
               )}
               <Button type="submit" size="sm" loading={saving} disabled={!dirty}>
-                Save changes
+                {t('common.saveChanges')}
               </Button>
             </div>
           </div>

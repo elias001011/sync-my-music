@@ -12,12 +12,15 @@ import '@fontsource/space-mono/400.css'
 import '@fontsource/space-mono/700.css'
 
 import App from './App.tsx'
+import { I18nProvider } from './i18n/I18nProvider.tsx'
 import './index.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <I18nProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </I18nProvider>
   </StrictMode>,
 )

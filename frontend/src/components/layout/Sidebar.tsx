@@ -20,20 +20,22 @@ import type { IconType } from 'react-icons'
 
 import songmirrorMark from '@/assets/brand/songmirror-mark.png'
 import { useSidebarCollapsed } from '@/hooks/useSidebarCollapsed'
+import type { MessageKey } from '@/i18n/messages'
+import { useI18n } from '@/i18n/useI18n'
 import { cn } from '@/lib/cn'
 
 const REPO_URL = 'https://github.com/elias001011/sync-my-music'
 
-const NAV_ITEMS: Array<{ to: string; label: string; end: boolean; icon: IconType }> = [
-  { to: '/', label: 'Dashboard', end: true, icon: LuLayoutDashboard },
-  { to: '/library', label: 'Library', end: false, icon: LuDatabase },
-  { to: '/recaps', label: 'Recaps', end: false, icon: LuChartBar },
-  { to: '/accounts', label: 'Accounts', end: false, icon: LuLink2 },
-  { to: '/playlists', label: 'Playlists', end: false, icon: LuListMusic },
-  { to: '/sync', label: 'Sync', end: false, icon: LuRefreshCw },
-  { to: '/transfers', label: 'Transfers', end: false, icon: LuArrowLeftRight },
-  { to: '/settings', label: 'Settings', end: false, icon: LuSettings2 },
-  { to: '/logs', label: 'Logs', end: false, icon: LuScrollText },
+const NAV_ITEMS: Array<{ to: string; labelKey: MessageKey; end: boolean; icon: IconType }> = [
+  { to: '/', labelKey: 'nav.dashboard', end: true, icon: LuLayoutDashboard },
+  { to: '/library', labelKey: 'nav.library', end: false, icon: LuDatabase },
+  { to: '/recaps', labelKey: 'nav.recaps', end: false, icon: LuChartBar },
+  { to: '/accounts', labelKey: 'nav.accounts', end: false, icon: LuLink2 },
+  { to: '/playlists', labelKey: 'nav.playlists', end: false, icon: LuListMusic },
+  { to: '/sync', labelKey: 'nav.sync', end: false, icon: LuRefreshCw },
+  { to: '/transfers', labelKey: 'nav.transfers', end: false, icon: LuArrowLeftRight },
+  { to: '/settings', labelKey: 'nav.settings', end: false, icon: LuSettings2 },
+  { to: '/logs', labelKey: 'nav.logs', end: false, icon: LuScrollText },
 ]
 
 /** 240px persistent rail from `lg` (1024px) up — collapsible to a 68px
@@ -43,6 +45,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end: boolean; icon: IconType
 export function Sidebar() {
   const [collapsed, toggleCollapsed] = useSidebarCollapsed()
   const [menuOpen, setMenuOpen] = useState(false)
+  const { t } = useI18n()
 
   useEffect(() => {
     if (!menuOpen) return
@@ -84,8 +87,8 @@ export function Sidebar() {
             <button
               type="button"
               onClick={toggleCollapsed}
-              title="Expand sidebar"
-              aria-label="Expand sidebar"
+              title={t('nav.expandSidebar')}
+              aria-label={t('nav.expandSidebar')}
               className="group grid size-9 place-items-center rounded-control transition-colors duration-fast hover:bg-surface-2"
             >
               {/* logo by default; the expand affordance cross-fades in on hover */}
@@ -101,7 +104,7 @@ export function Sidebar() {
             <>
               <Link
                 to="/"
-                title="Dashboard"
+                title={t('nav.dashboard')}
                 className="flex min-w-0 items-center gap-2.5 rounded-control transition-opacity duration-fast hover:opacity-75"
               >
                 <Logo />
@@ -110,8 +113,8 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={toggleCollapsed}
-                title="Collapse sidebar"
-                aria-label="Collapse sidebar"
+                title={t('nav.collapseSidebar')}
+                aria-label={t('nav.collapseSidebar')}
                 className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-control text-text-2 transition-colors duration-fast hover:bg-surface-2 hover:text-text"
               >
                 <LuPanelLeftClose className="size-[18px]" aria-hidden="true" />
@@ -120,17 +123,17 @@ export function Sidebar() {
           )}
         </div>
 
-        <nav aria-label="Primary" className="flex flex-1 flex-col gap-1 p-3">
+        <nav aria-label={t('nav.primary')} className="flex flex-1 flex-col gap-1 p-3">
           {!collapsed && (
-            <span className="px-2.5 pb-1.5 font-mono text-[10px] font-bold tracking-[0.14em] text-text-3">MENU</span>
+            <span className="px-2.5 pb-1.5 font-mono text-[10px] font-bold tracking-[0.14em] text-text-3">{t('nav.menu')}</span>
           )}
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
-              title={collapsed ? item.label : undefined}
-              aria-label={collapsed ? item.label : undefined}
+              title={collapsed ? t(item.labelKey) : undefined}
+              aria-label={collapsed ? t(item.labelKey) : undefined}
               className={({ isActive }) =>
                 cn(
                   'flex h-10 items-center gap-2.5 rounded-[9px] text-sm font-medium transition-colors duration-fast',
@@ -142,7 +145,7 @@ export function Sidebar() {
               }
             >
               <item.icon className="size-[18px] shrink-0" aria-hidden="true" />
-              {!collapsed && item.label}
+              {!collapsed && t(item.labelKey)}
             </NavLink>
           ))}
         </nav>
@@ -158,7 +161,7 @@ export function Sidebar() {
       <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2.5 border-b border-border bg-surface/90 px-4 backdrop-blur lg:hidden">
         <Link
           to="/"
-          title="Dashboard"
+          title={t('nav.dashboard')}
           onClick={() => setMenuOpen(false)}
           className="flex min-w-0 items-center gap-2.5 rounded-control transition-opacity duration-fast hover:opacity-75"
         >
@@ -170,7 +173,7 @@ export function Sidebar() {
           className="ml-auto inline-flex size-11 shrink-0 items-center justify-center rounded-control border border-border bg-surface-2 text-text"
           aria-expanded={menuOpen}
           aria-controls="mobile-nav"
-          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-label={menuOpen ? t('nav.closeMenu') : t('nav.openMenu')}
           onClick={() => setMenuOpen((v) => !v)}
         >
           {menuOpen ? <LuX className="size-5" aria-hidden="true" /> : <LuMenu className="size-5" aria-hidden="true" />}
@@ -180,7 +183,7 @@ export function Sidebar() {
       {menuOpen && (
         <nav
           id="mobile-nav"
-          aria-label="Primary"
+          aria-label={t('nav.primary')}
           className="sticky top-14 z-40 flex flex-col gap-0.5 border-b border-border-strong bg-surface px-3 pb-4 pt-2.5 lg:hidden"
         >
           {NAV_ITEMS.map((item) => (
@@ -197,7 +200,7 @@ export function Sidebar() {
               }
             >
               <item.icon className="size-[18px] shrink-0" aria-hidden="true" />
-              {item.label}
+              {t(item.labelKey)}
             </NavLink>
           ))}
           <div className="mt-2 border-t border-border pt-3">
@@ -212,14 +215,15 @@ export function Sidebar() {
 /** Source link, centered on the sidebar's bottom edge. Icon-only in both rail
  * widths, so collapsing the rail doesn't change it. */
 function RepoLink() {
+  const { t } = useI18n()
   return (
     <div className="flex items-center justify-center">
       <a
         href={REPO_URL}
         target="_blank"
         rel="noreferrer"
-        title="Sync My Music on GitHub"
-        aria-label="Sync My Music on GitHub"
+        title={t('nav.github')}
+        aria-label={t('nav.github')}
         className="flex size-9 items-center justify-center rounded-control text-text-3 transition-colors duration-fast hover:bg-surface-2 hover:text-text"
       >
         <LuGithub className="size-[18px]" aria-hidden="true" />
