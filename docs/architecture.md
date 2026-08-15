@@ -42,6 +42,24 @@ There are two deliberately different stores:
   key is account + period + track. Importing July again replaces July. A first
   import of 20 minutes followed by 40 minutes therefore reports 40, never 60.
 
+Monthly and annual recap rows are retained by calendar year. The default is the
+current year plus the two previous years; the Settings UI accepts 1–10 years.
+Pruning only removes `listens` and `listening_aggregates`, never canonical
+tracks, playlists, surfaces, or provider identities.
+
+## Whole-application backups
+
+The Settings page exports a versioned ZIP containing a consistent SQLite
+snapshot plus configuration, jobs, links, and local connector state. Every file
+has a SHA-256 digest in the manifest. Restore validates archive paths, size,
+hashes, and SQLite integrity, runs through the same exclusive queue as syncs,
+and keeps the latest three pre-restore recovery copies.
+
+Exports are not encrypted and can contain credentials. Spotify's `sp_dc` web
+session cookie is therefore always excluded and cookie write mode is reset to
+OAuth in the portable backup. Restore the ZIP only on a trusted machine and
+re-enable cookie mode explicitly afterward.
+
 Pano Scrobbler or Web Scrobbler can submit individual plays to
 `http://<server>:8080/1/submit-listens`. Set `SCROBBLE_TOKEN` to require an
 `Authorization: Token ...` header.

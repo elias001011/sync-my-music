@@ -17,6 +17,7 @@ import type {
   ProviderPlaylist,
   ResolveConflictRequest,
   Recap,
+  RecapHistory,
   RunResponse,
   ScheduleRequest,
   SonoraStatus,
@@ -26,6 +27,7 @@ import type {
   SyncJob,
   SyncJobUpsertRequest,
   SyncStatus,
+  SystemBackupRestore,
   TransferControlResponse,
   TransferJob,
 } from './types'
@@ -79,6 +81,7 @@ export const api = {
     request<LibraryTracksResponse>(`/api/library/tracks?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
   getRecap: (year: number, month?: number) =>
     request<Recap>(`/api/recaps?year=${year}${month ? `&month=${month}` : ''}`),
+  getRecapHistory: () => request<RecapHistory>('/api/recaps/history'),
   getLogs: (kind = '', tag = '', q = '', limit = 500) =>
     request<import('./types').SyncEvent[]>(`/api/logs?kind=${encodeURIComponent(kind)}&tag=${encodeURIComponent(tag)}&q=${encodeURIComponent(q)}&limit=${limit}`),
   exportMusify: (body: { source_provider: string; playlist_id: string; title?: string }) =>
@@ -131,6 +134,11 @@ export const api = {
   // Settings
   getSettings: () => request<Settings>('/api/settings'),
   saveSettings: (values: Settings) => request<OkResponse>('/api/settings', { method: 'PUT', body: JSON.stringify(values) }),
+  restoreSystemBackup: (file: File) => {
+    const form = new FormData()
+    form.append('backup', file)
+    return request<SystemBackupRestore>('/api/system-backup/restore', { method: 'POST', body: form })
+  },
 
   // Sync (global: run-all + the auto-sync master switch)
   runSync: (execute: boolean) => request<RunResponse>(`/api/sync/run?execute=${execute ? 1 : 0}`, { method: 'POST' }),

@@ -117,6 +117,7 @@ bridges for [Musify](https://github.com/gokadzev/Musify) and
 - Replaceable monthly snapshots for manual Musify and Sonora imports.
 - Combined yearly and monthly views without writing fabricated listening history
   back to commercial services.
+- Configurable calendar-year retention from 1 to 10 years (3 by default).
 
 ### Operations you can actually inspect
 
@@ -125,6 +126,8 @@ bridges for [Musify](https://github.com/gokadzev/Musify) and
 - Preview writes, cap additions/removals, and fail closed when authentication or
   a provider read looks unsafe.
 - Run with Docker, directly with Python, or on a small always-on Termux server.
+- Export and restore a versioned whole-application ZIP; restores validate hashes
+  and SQLite integrity and keep a bounded pre-restore recovery copy.
 
 ## 🔌 Integrations
 
@@ -217,6 +220,9 @@ Still evolving:
 Contributions are welcome once the repository is public, especially provider
 adapters that respect account security and clearly advertise their read/write
 capabilities.
+
+For a strict implemented/partial/foundation breakdown, see the
+[product status and backlog (pt-BR)](docs/plans/product-backlog.pt-BR.md).
 
 <div align="right">
 

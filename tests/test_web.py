@@ -1,5 +1,9 @@
 """Web layer smoke tests (FastAPI TestClient)."""
 
+import io
+import json
+import zipfile
+
 from fastapi.testclient import TestClient
 
 from songmirror.services.settings import SettingsStore
@@ -31,6 +35,63 @@ def test_settings_roundtrip_masks_secrets(tmp_path):
         got = client.get("/api/settings").json()
         assert got["SYNC_INTERVAL"] == "30m"
         assert "SPOTIFY_CLIENT_SECRET" not in got  # secret never echoed back
+
+
+def test_listening_retention_setting_is_bounded(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        assert client.get("/api/settings").json()["LISTENING_RETENTION_YEARS"] == "3"
+        assert client.put("/api/settings", json={"LISTENING_RETENTION_YEARS": "10"}).status_code == 200
+        assert client.get("/api/settings").json()["LISTENING_RETENTION_YEARS"] == "10"
+        assert client.put("/api/settings", json={"LISTENING_RETENTION_YEARS": "11"}).status_code == 422
+
+
+def test_system_backup_export_and_restore_roundtrip(tmp_path):
+    store = SettingsStore(dir=tmp_path)
+    store.save({
+        "DISPLAY_NAME": "Before",
+        "SPOTIFY_CLIENT_SECRET": "secret",
+        "SPOTIFY_SP_DC": "also-never-export",
+        "SPOTIFY_WRITE_BACKEND": "cookie",
+    })
+    (tmp_path / "syncs.json").write_text('[{"id":"kept"}]', encoding="utf-8")
+    (tmp_path / "spotify_sp_dc.private").write_text("never-export-this-cookie", encoding="utf-8")
+    with TestClient(create_app(settings=store)) as client:
+        exported = client.get("/api/system-backup")
+        assert exported.status_code == 200
+        assert exported.headers["cache-control"] == "no-store"
+        with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+            assert {"manifest.json", "database/sync_music.db", "data/settings.json", "data/syncs.json"}.issubset(archive.namelist())
+            assert "data/spotify_sp_dc.private" not in archive.namelist()
+            assert b"never-export-this-cookie" not in exported.content
+            assert b"also-never-export" not in archive.read("data/settings.json")
+            assert b"also-never-export" not in archive.read("data/app.env")
+            assert json.loads(archive.read("data/settings.json"))["SPOTIFY_WRITE_BACKEND"] == "oauth"
+
+        client.put("/api/settings", json={"DISPLAY_NAME": "After"})
+        (tmp_path / "syncs.json").write_text("[]", encoding="utf-8")
+        (tmp_path / "stale-token.json").write_text("stale", encoding="utf-8")
+        restored = client.post(
+            "/api/system-backup/restore",
+            files={"backup": ("backup.zip", exported.content, "application/zip")},
+        )
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["restart_recommended"] is True
+        assert client.get("/api/settings").json()["DISPLAY_NAME"] == "Before"
+        assert (tmp_path / "syncs.json").read_text(encoding="utf-8") == '[{"id":"kept"}]'
+        assert not (tmp_path / "stale-token.json").exists()
+        assert list((tmp_path / "recovery").glob("sync-pre-restore-*.zip"))
+
+
+def test_system_backup_rejects_unrelated_zip(tmp_path):
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("not-a-backup.txt", "nope")
+    with TestClient(_app(tmp_path)) as client:
+        response = client.post(
+            "/api/system-backup/restore",
+            files={"backup": ("bad.zip", payload.getvalue(), "application/zip")},
+        )
+        assert response.status_code == 400
 
 
 def test_settings_falls_back_to_env(tmp_path, monkeypatch):

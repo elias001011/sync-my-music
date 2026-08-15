@@ -84,6 +84,12 @@ def recap(request: Request, year: int | None = None, month: int | None = Query(N
     return request.app.state.music_db.recap(year, month)
 
 
+@router.get("/api/recaps/history")
+def recap_history(request: Request):
+    years = request.app.state.settings.get("LISTENING_RETENTION_YEARS")
+    return request.app.state.music_db.recap_history(years)
+
+
 @router.post("/1/submit-listens")
 async def listenbrainz_submit(request: Request):
     """ListenBrainz-compatible ingestion endpoint for Pano/Web Scrobbler.

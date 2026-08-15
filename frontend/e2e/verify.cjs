@@ -123,6 +123,15 @@ const SETTINGS = {
   DISPLAY_NAME: 'Maya',
   DOWNLOAD_DIR: '/music/playlists',
   LOCAL_MIRROR_FORMAT: 'mp3',
+  LISTENING_RETENTION_YEARS: '3',
+}
+
+const RECAP = {
+  year: new Date().getFullYear(), month: null, plays: 42, tracks: 8, artists: 4, listened_ms: 7200000,
+  top_tracks: [{ id: 'track-1', title: 'Road Song', artist: 'Driver', plays: 12, listened_ms: 2160000 }],
+  top_artists: [{ id: 'artist-1', name: 'Driver', plays: 12, tracks: 2 }],
+  services: [{ source: 'musify', plays: 24, listened_ms: 4200000 }, { source: 'spotify', plays: 18, listened_ms: 3000000 }],
+  by_month: [{ month: 7, plays: 42 }],
 }
 
 // Two named sync jobs (Soundiiz-style). "Default" preserves every scenario
@@ -342,6 +351,20 @@ async function installMocks(page, opts = {}) {
         { id: 'track-1', title: 'Road Song', artist: 'Driver', album: 'Night Drive', duration_ms: 180000, isrc: null, play_count: 3, last_listened_at: 1784500000 },
         { id: 'track-2', title: 'Night Song', artist: 'Driver', album: '', duration_ms: 200000, isrc: null, play_count: 1, last_listened_at: 1784500000 },
       ],
+    })
+    if (p === '/api/recaps/history' && method === 'GET') return json({
+      retention_years: 3,
+      cutoff_year: new Date().getFullYear() - 2,
+      current_year: new Date().getFullYear(),
+      months: [{ year: new Date().getFullYear(), month: 7, plays: 42, tracks: 8, artists: 4, listened_ms: 7200000 }],
+    })
+    if (p === '/api/recaps' && method === 'GET') {
+      const month = Number(url.searchParams.get('month')) || null
+      return json(month ? { ...RECAP, month, by_month: [] } : RECAP)
+    }
+    if (p === '/api/system-backup/restore' && method === 'POST') return json({
+      ok: true, restored_files: 5, created_at: new Date().toISOString(),
+      recovery_backup: 'sync-pre-restore-test.zip', restart_recommended: true,
     })
     if (p === '/api/musify/backup' && method === 'POST') return json({
       likedSongs: 1, recentlyPlayedSongs: 1, likedPlaylists: 0, followedArtists: 0,
@@ -624,6 +647,17 @@ async function main() {
           console.log('ok         Musify user.hive upload refreshes the Library and shows imported counts')
         }
         if (width !== 320) await shot(page, `library-${width}-${theme}`)
+
+        await gotoPage(page, 'Recaps', width)
+        await page.waitForSelector('h1:has-text("Listening recap")')
+        await page.waitForSelector('h2:has-text("Monthly history")')
+        await checkOverflow(page, `Recaps @ ${width} ${theme}`, results)
+        if (width === 1280 && theme === 'light') {
+          await page.getByRole('button', { name: /JULY/i }).click()
+          await page.waitForSelector('text=MONTHLY RECAP')
+          console.log('ok         Recaps opens a detailed monthly recap below the annual overview')
+        }
+        if (width !== 320) await shot(page, `recaps-${width}-${theme}`)
 
         await gotoPage(page, 'Playlists', width)
         await page.waitForSelector('h1:has-text("Playlists")')

@@ -70,6 +70,16 @@ class SettingsStore:
         self._render_env()
         self.apply_to_env()
 
+    def reload(self):
+        """Reload restored settings from disk and refresh the managed env."""
+        previous_scalar_keys = {key for key, value in self._data.items() if _scalar(value)}
+        self._data = self._read()
+        for key in previous_scalar_keys - self._data.keys():
+            os.environ.pop(key, None)
+        self._render_env()
+        self.apply_to_env()
+        return self.load()
+
     def _render_env(self):
         lines = [f"{k}={shlex.quote(str(v))}" for k, v in self._data.items() if _scalar(v)]
         with _open_private(self.env_path) as f:

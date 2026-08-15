@@ -40,6 +40,33 @@ def test_listenbrainz_events_are_idempotent(tmp_path):
     assert db.import_listens([event], "spotify") == {"inserted": 0, "duplicates": 1}
 
 
+def test_month_history_and_configurable_calendar_year_retention(tmp_path):
+    db = MusicDatabase(tmp_path / "music.db")
+    track = db.upsert_track({"track_name": "A Song", "artist_name": "An Artist", "duration_ms": 180_000})
+    account = db.sync_account("spotify", "Spotify", "connected")
+    with db.connect() as conn:
+        for year, month, plays in [(2023, 12, 1), (2024, 2, 2), (2026, 7, 3)]:
+            for day in range(1, plays + 1):
+                listened_at = int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+                conn.execute(
+                    """INSERT INTO listens(id, track_id, account_id, listened_at, listened_ms, source,
+                       source_event_id, metadata, imported_at) VALUES (?, ?, ?, ?, ?, 'spotify', ?, '{}', ?)""",
+                    (f"{year}-{month}-{day}", track, account["id"], listened_at, 180_000,
+                     f"event-{year}-{month}-{day}", listened_at),
+                )
+
+    result = db.prune_listening_history(3, datetime(2026, 8, 1, tzinfo=timezone.utc))
+    assert result["cutoff_year"] == 2024
+    assert result["deleted_listens"] == 1
+    assert db.library()["total"] == 1  # retention never removes canonical tracks
+
+    history = db.recap_history(3, datetime(2026, 8, 1, tzinfo=timezone.utc))
+    assert history["cutoff_year"] == 2024
+    assert [(item["year"], item["month"], item["plays"]) for item in history["months"]] == [
+        (2026, 7, 3), (2024, 2, 2),
+    ]
+
+
 def test_playlist_versions_are_bounded_and_restorable(tmp_path):
     db = MusicDatabase(tmp_path / "music.db")
     track_a = db.upsert_track({"track_name": "A", "artist_name": "Artist"})

@@ -154,6 +154,9 @@ Já implementado:
 - Exportação de playlists e importação de recaps do Musify.
 - Backup-v2 e pareamento/sincronização LAN configurável do Sonora.
 - Recaps unificados, logs persistentes e pausa por provedor.
+- Histórico mensal/anual com retenção configurável de 1 a 10 anos.
+- Backup e restauração versionados do próprio SYNC; o cookie `sp_dc` fica fora
+  dos ZIPs enquanto não houver criptografia.
 
 Em evolução:
 
@@ -163,6 +166,9 @@ Em evolução:
 - Login e autorização adequados para acesso fora de uma LAN confiável.
 - Mais formatos de importação, ferramentas de conflito e testes de integração.
 - Tradução pt-BR completa da interface web.
+
+Uma matriz honesta do que está completo, parcial ou somente preparado no schema
+fica em [Estado real e fila do produto](docs/plans/product-backlog.pt-BR.md).
 
 ## 🚀 Instalação rápida
 

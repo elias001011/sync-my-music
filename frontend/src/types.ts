@@ -106,6 +106,30 @@ export interface Recap {
   by_month: Array<{ month: number; plays: number }>
 }
 
+export interface RecapMonthSummary {
+  year: number
+  month: number
+  plays: number
+  tracks: number
+  artists: number
+  listened_ms: number
+}
+
+export interface RecapHistory {
+  retention_years: number
+  cutoff_year: number
+  current_year: number
+  months: RecapMonthSummary[]
+}
+
+export interface SystemBackupRestore {
+  ok: true
+  restored_files: number
+  created_at: string | null
+  recovery_backup: string
+  restart_recommended: boolean
+}
+
 export interface MusifyExportResponse {
   format: string
   track_count: number

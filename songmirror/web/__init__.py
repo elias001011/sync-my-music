@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..services.events import EventBus
+from ..services.backups import BackupService
 from ..services.playlists import LinkStore
 from ..services.music_database import MusicDatabase
 from ..services.sonora import SonoraAdapter, SonoraLanService
@@ -34,7 +35,7 @@ _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 def create_app(settings=None, bus=None, sync_service=None, links=None, transfers=None, syncs=None,
-               music_db=None, sonora=None) -> FastAPI:
+               music_db=None, sonora=None, backups=None) -> FastAPI:
     settings = settings or SettingsStore()
     bus = bus or EventBus()
     syncs = syncs or SyncStore(dir=Path(settings.env_path).parent)
@@ -44,6 +45,7 @@ def create_app(settings=None, bus=None, sync_service=None, links=None, transfers
     transfers = transfers or TransferService(settings, bus, sync_service, music_db)
     bus.set_archive(music_db.record_event)
     sonora = sonora or SonoraLanService(settings, SonoraAdapter(music_db))
+    backups = backups or BackupService(settings, music_db)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -55,6 +57,7 @@ def create_app(settings=None, bus=None, sync_service=None, links=None, transfers
         load_dotenv()
         os.environ["SONGMIRROR_ENV_FILE"] = settings.env_path
         settings.apply_to_env()
+        music_db.prune_listening_history(settings.get("LISTENING_RETENTION_YEARS"))
         if str(settings.get("SONORA_LAN_SYNC") or "0") == "1":
             sonora.start()
         await sync_service.start()
@@ -73,6 +76,7 @@ def create_app(settings=None, bus=None, sync_service=None, links=None, transfers
     app.state.transfers = transfers
     app.state.music_db = music_db
     app.state.sonora = sonora
+    app.state.backups = backups
 
     app.include_router(accounts.router)
     app.include_router(settings_router.router)

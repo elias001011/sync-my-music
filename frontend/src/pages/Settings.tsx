@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LuArrowRight } from 'react-icons/lu'
+import { LuArrowRight, LuDownload, LuUpload } from 'react-icons/lu'
 
 import { api, errorMessage } from '@/api'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
 import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { SelectField } from '@/components/ui/SelectField'
 import { LoadingStatus, Skeleton } from '@/components/ui/Skeleton'
 import { SettingsGroup } from '@/components/ui/SettingsGroup'
@@ -24,6 +25,7 @@ const DEFAULTS: SettingsMap = {
   DISPLAY_NAME: '',
   DOWNLOAD_DIR: '',
   LOCAL_MIRROR_FORMAT: '',
+  LISTENING_RETENTION_YEARS: '3',
 }
 
 export default function Settings() {
@@ -32,6 +34,11 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [justSaved, setJustSaved] = useState(false)
+  const backupInput = useRef<HTMLInputElement>(null)
+  const [pendingBackup, setPendingBackup] = useState<File | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  const [backupStatus, setBackupStatus] = useState<string | null>(null)
+  const [backupError, setBackupError] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings) setForm({ ...DEFAULTS, ...settings })
@@ -61,6 +68,23 @@ export default function Settings() {
       setSaveError(errorMessage(err))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function restoreBackup() {
+    if (!pendingBackup) return
+    setRestoring(true)
+    setBackupError(null)
+    try {
+      const result = await api.restoreSystemBackup(pendingBackup)
+      setBackupStatus(`Restored ${result.restored_files} files. A pre-restore recovery copy was kept as ${result.recovery_backup}. Restart the server when convenient.`)
+      setPendingBackup(null)
+      if (backupInput.current) backupInput.current.value = ''
+      await refresh()
+    } catch (err) {
+      setBackupError(errorMessage(err))
+    } finally {
+      setRestoring(false)
     }
   }
 
@@ -137,6 +161,51 @@ export default function Settings() {
                 />
               </div>
             </SettingsGroup>
+            <SettingsGroup label="LISTENING HISTORY">
+              <SelectField
+                label="Recap retention"
+                help="Keeps monthly and annual listening details. Library tracks and playlists are never removed by this policy."
+                options={Array.from({ length: 10 }, (_, index) => ({
+                  value: String(index + 1),
+                  label: `${index + 1} ${index === 0 ? 'year' : 'years'}${index === 2 ? ' (recommended)' : ''}`,
+                }))}
+                value={form.LISTENING_RETENTION_YEARS ?? '3'}
+                onChange={(e) => setField('LISTENING_RETENTION_YEARS', e.target.value)}
+              />
+              <p className="text-xs leading-relaxed text-text-3">
+                Retention follows calendar years. Three years in 2026 means January 2024 onward. Lowering it deletes older recap rows immediately; export a backup first if you may need them later.
+              </p>
+            </SettingsGroup>
+
+            <SettingsGroup label="SYNC MY MUSIC BACKUP">
+              <p className="text-xs leading-relaxed text-text-3">
+                Export the canonical database, settings, sync jobs, playlist links, and local provider sessions in one portable ZIP.
+              </p>
+              <p className="rounded-control bg-warning-soft px-3 py-2 text-xs leading-relaxed text-warning">
+                Keep exports private: they may contain service tokens and credentials. Spotify's high-risk sp_dc cookie is excluded until encrypted backups are available.
+              </p>
+              <input
+                ref={backupInput}
+                type="file"
+                accept=".zip,application/zip"
+                className="sr-only"
+                onChange={(event) => {
+                  setBackupError(null)
+                  setBackupStatus(null)
+                  setPendingBackup(event.target.files?.[0] ?? null)
+                }}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button icon={<LuDownload className="size-4" />} onClick={() => window.location.assign('/api/system-backup')}>
+                  Export backup
+                </Button>
+                <Button variant="secondary" icon={<LuUpload className="size-4" />} onClick={() => backupInput.current?.click()}>
+                  Restore backup
+                </Button>
+              </div>
+              {backupStatus && <p className="text-xs leading-relaxed text-success">{backupStatus}</p>}
+              {backupError && <p className="text-xs leading-relaxed text-danger">Restore failed: {backupError}</p>}
+            </SettingsGroup>
           </div>
 
           <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface p-3.5 shadow-lg sm:p-4">
@@ -159,6 +228,20 @@ export default function Settings() {
           </div>
         </form>
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(pendingBackup)}
+        title="Restore this Sync My Music backup?"
+        description={`This replaces the active database and stored configuration with ${pendingBackup?.name ?? 'the selected backup'}. A recovery backup of the current state is created first.`}
+        confirmLabel="Restore backup"
+        danger
+        loading={restoring}
+        onConfirm={() => void restoreBackup()}
+        onCancel={() => {
+          setPendingBackup(null)
+          if (backupInput.current) backupInput.current.value = ''
+        }}
+      />
     </div>
   )
 }

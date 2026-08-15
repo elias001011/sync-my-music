@@ -249,6 +249,21 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
     "sonora": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": True},
 }
 
+MIN_LISTENING_RETENTION_YEARS = 1
+MAX_LISTENING_RETENTION_YEARS = 10
+DEFAULT_LISTENING_RETENTION_YEARS = 3
+
+
+def listening_retention_years(value: object | None = None) -> int:
+    """Return the configured retention, safely clamped to the supported range."""
+    try:
+        years = int(value if value is not None else os.getenv(
+            "LISTENING_RETENTION_YEARS", str(DEFAULT_LISTENING_RETENTION_YEARS)
+        ))
+    except (TypeError, ValueError):
+        years = DEFAULT_LISTENING_RETENTION_YEARS
+    return max(MIN_LISTENING_RETENTION_YEARS, min(years, MAX_LISTENING_RETENTION_YEARS))
+
 
 def _now() -> int:
     return int(datetime.now(timezone.utc).timestamp())
@@ -456,6 +471,7 @@ class MusicDatabase:
                     inserted += 1
                 else:
                     duplicate += 1
+        self.prune_listening_history()
         return {"inserted": inserted, "duplicates": duplicate}
 
     def replace_listening_aggregates(self, source: str, entries: Iterable[dict[str, Any]],
@@ -499,7 +515,70 @@ class MusicDatabase:
                      source, json.dumps(entry, ensure_ascii=False), _now()),
                 )
                 replaced += 1
+        self.prune_listening_history()
         return {"replaced": replaced}
+
+    def prune_listening_history(self, years: int | None = None,
+                                now: datetime | None = None) -> dict[str, Any]:
+        """Drop recap rows before the retained calendar-year window.
+
+        Canonical tracks, playlists and surfaces are intentionally untouched.
+        With three years in 2026, only listening rows before 2024-01-01 go.
+        """
+        years = listening_retention_years(years)
+        now = now or datetime.now(timezone.utc)
+        cutoff = datetime(now.year - years + 1, 1, 1, tzinfo=timezone.utc)
+        cutoff_ts = int(cutoff.timestamp())
+        with self.connect() as conn:
+            events = conn.execute("DELETE FROM listens WHERE listened_at < ?", (cutoff_ts,)).rowcount
+            aggregates = conn.execute(
+                "DELETE FROM listening_aggregates WHERE period_end <= ?", (cutoff_ts,)
+            ).rowcount
+        return {
+            "years": years,
+            "cutoff_year": cutoff.year,
+            "deleted_listens": events,
+            "deleted_aggregates": aggregates,
+        }
+
+    def recap_history(self, years: int | None = None, now: datetime | None = None) -> dict[str, Any]:
+        """Compact month summaries for the configured recap history window."""
+        years = listening_retention_years(years)
+        now = now or datetime.now(timezone.utc)
+        cutoff_year = now.year - years + 1
+        cutoff = int(datetime(cutoff_year, 1, 1, tzinfo=timezone.utc).timestamp())
+        end = int(datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).timestamp())
+        with self.connect() as conn:
+            rows = conn.execute(
+                """WITH combined AS (
+                     SELECT CAST(strftime('%Y', listened_at, 'unixepoch') AS INTEGER) year,
+                            CAST(strftime('%m', listened_at, 'unixepoch') AS INTEGER) month,
+                            l.track_id track_id, t.artist_id artist_id,
+                            COUNT(*) plays,
+                            SUM(COALESCE(l.listened_ms, t.duration_ms, 0)) listened_ms
+                     FROM listens l JOIN tracks t ON t.id=l.track_id
+                     WHERE listened_at >= ? AND listened_at < ?
+                     GROUP BY year, month, l.track_id
+                     UNION ALL
+                     SELECT CAST(strftime('%Y', period_start, 'unixepoch') AS INTEGER) year,
+                            CAST(strftime('%m', period_start, 'unixepoch') AS INTEGER) month,
+                            la.track_id track_id, t.artist_id artist_id,
+                            SUM(play_count) plays, SUM(listened_ms) listened_ms
+                     FROM listening_aggregates la JOIN tracks t ON t.id=la.track_id
+                     WHERE period_start >= ? AND period_start < ?
+                     GROUP BY year, month, la.track_id
+                   )
+                   SELECT year, month, SUM(plays) plays, SUM(listened_ms) listened_ms,
+                          COUNT(DISTINCT track_id) tracks, COUNT(DISTINCT artist_id) artists
+                   FROM combined GROUP BY year, month ORDER BY year DESC, month DESC""",
+                (cutoff, end, cutoff, end),
+            ).fetchall()
+        return {
+            "retention_years": years,
+            "cutoff_year": cutoff_year,
+            "current_year": now.year,
+            "months": [dict(row) for row in rows],
+        }
 
     def library(self, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
         params: list[Any] = []
@@ -541,7 +620,7 @@ class MusicDatabase:
         return counts
 
     def recap(self, year: int | None = None, month: int | None = None) -> dict[str, Any]:
-        year = year or datetime.now().year
+        year = year or datetime.now(timezone.utc).year
         start = datetime(year, month or 1, 1, tzinfo=timezone.utc)
         if month == 12:
             end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
