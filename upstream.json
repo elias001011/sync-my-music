@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/ahnafnafee/songmirror",
+  "branch": "main",
+  "last_reviewed": "09cecec3e998ec143528b0049bd4ce04eb6b0cce",
+  "last_integrated": "05a61de9291cd885cfd1d7b144450929ec07414a",
+  "notes": [
+    "09cecec was reviewed on 2026-08-15; it only changes inherited branding proportions and sync-hold presentation and has not been ported."
+  ]
+}

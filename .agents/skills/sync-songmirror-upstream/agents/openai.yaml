@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync SongMirror Upstream"
+  short_description: "Safely review and port SongMirror updates"
+  default_prompt: "Use $sync-songmirror-upstream to inspect new SongMirror commits and prepare a tested, selective integration plan."

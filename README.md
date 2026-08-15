@@ -1,5 +1,7 @@
 <div align="center"><a name="readme-top"></a>
 
+**English** · [Português (Brasil)](README.pt-BR.md)
+
 # Sync My Music
 
 **Your self-hosted music control center.** Keep a canonical copy of your music
@@ -23,7 +25,7 @@ the canonical database, listening model, playlist recovery, operational UI, and
 bridges for [Musify](https://github.com/gokadzev/Musify) and
 [Sonora](https://github.com/gmstyle/sonora). See [Credits](#-credits) for details.
 
-[Quick Start](#-quick-start) · [What it does](#-what-it-does) · [Integrations](#-integrations) · [Architecture](docs/architecture.md) · [Roadmap](#-current-status-and-roadmap) · [Report Bug][github-issues-link]
+[Quick Start](#-quick-start) · [What it does](#-what-it-does) · [Integrations](#-integrations) · [Architecture](docs/architecture.md) · [Upstream sync](docs/upstream-sync.md) · [Roadmap](#-current-status-and-roadmap) · [Report Bug][github-issues-link]
 
 <!-- SHIELD GROUP -->
 
