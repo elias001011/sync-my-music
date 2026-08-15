@@ -1,0 +1,38 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local secrets / auth / state
+.env
+*.log
+.cache
+.cache-*
+apple_resolve_cache.json
+spotify_resolve_cache.json
+song_cache.db
+spotify_tracks_cache.json
+download_state.json
+ytmusic_browser.json
+ytmusic_oauth.json
+ytmusic_resolve_cache.json
+data/
+downloads/
+
+# Local provider research notes
+docs/monochrome-flac-assessment.md
+docs/qobuz-web-api-assessment.md
+
+# Obsolete state from the old Apple->Spotify direction
+synced_isrcs.json
+apple_spotify_uri_cache.json
+
+# Remotion promo project
+promo/node_modules
+promo/out

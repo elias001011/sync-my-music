@@ -1,0 +1,65 @@
+name: sync-my-music
+
+services:
+  web:
+    build: .
+    container_name: sync-my-music
+    # A .env is OPTIONAL — every service is configured in the browser and saved
+    # under ./data. Keep a .env only to preset things like DOWNLOAD_DIR or
+    # credentials. (`required: false` needs Docker Compose v2.24+; on older
+    # versions either create an empty `.env` or drop the `path:`/`required:` keys.)
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      # Web GUI at http://<host>:8888 (host 8888 -> container 8080).
+      # LAN-only — do NOT port-forward this to the internet (the UI has no login).
+      - "8888:8080"
+      - "53530:53530/udp"  # optional Sonora discovery on the home LAN
+    environment:
+      SONGMIRROR_DATA_DIR: /data           # persistent volume for settings, tokens, caches, syncs, links
+      SYNC_DATABASE: /data/sync_music.db    # canonical library, recaps, versions and logs
+      SONORA_SYNC_HTTP_PORT: "8888"         # port advertised to Sonora peers on the host
+      SONGMIRROR_ENV_FILE: /data/app.env   # SettingsStore's managed env; wizard saves win over any .env
+      SPOTIFY_TOKEN_CACHE: /data/spotify_token_cache
+      APPLE_CACHE_FILE: /data/apple_resolve_cache.json
+      SONG_CACHE_FILE: /data/song_cache.db
+      SPOTIFY_TRACKS_CACHE: /data/spotify_tracks_cache.json
+      DOWNLOAD_STATE_FILE: /data/download_state.json
+      YTMUSIC_AUTH_FILE: /data/ytmusic_oauth.json   # YouTube Data API v3 OAuth refresh token
+      YTMUSIC_CACHE_FILE: /data/ytmusic_resolve_cache.json
+      TIDAL_TOKEN_FILE: /data/tidal_oauth.json
+      TIDAL_CACHE_FILE: /data/tidal_resolve_cache.json
+      DEEZER_TOKEN_FILE: /data/deezer_oauth.json
+      DEEZER_WEB_SESSION_FILE: /data/deezer_web_session.json
+      DEEZER_CACHE_FILE: /data/deezer_resolve_cache.json
+      QOBUZ_CACHE_FILE: /data/qobuz_resolve_cache.json
+      AMAZON_MUSIC_TOKEN_FILE: /data/amazon_music_oauth.json
+      AMAZON_MUSIC_WEB_SESSION_FILE: /data/amazon_music_web_session.json
+      AMAZON_MUSIC_CACHE_FILE: /data/amazon_music_resolve_cache.json
+      # Opt-in no-quota (youtubei) backend: drop a ytmusicapi browser-auth file
+      # here and set YTMUSIC_PREFER_BROWSER=1 (Settings) to route YT reads/writes
+      # through it instead of the quota-capped Data API — the fix for large
+      # backfills. Cookies rotate, so re-export periodically. Unset/absent file =
+      # durable OAuth Data API (the default).
+      YTMUSIC_BROWSER_AUTH: /data/ytmusic_browser.json
+      SPOTIFY_CACHE_FILE: /data/spotify_resolve_cache.json   # N-way Spotify search cache
+      SPOTIFY_OAUTH_OPEN_BROWSER: "0"
+      # Container-internal download path (the host music dir is bind-mounted to
+      # it below). SONGMIRROR_DOWNLOAD_DIR is authoritative over any UI-saved
+      # DOWNLOAD_DIR — that value can be a host path (e.g. F:\Torrent\Music) the
+      # container's Linux filesystem doesn't have, which would send spotDL into
+      # the ephemeral container instead of the mount. Set the HOST location via
+      # DOWNLOAD_DIR in .env (it drives the mount below), not the in-app field.
+      SONGMIRROR_DOWNLOAD_DIR: /music
+    volumes:
+      - ./data:/data
+      - "${DOWNLOAD_DIR:-./downloads}:/music"
+    restart: unless-stopped
+    healthcheck:
+      # `docker ps` shows healthy/unhealthy once the web app answers /health.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

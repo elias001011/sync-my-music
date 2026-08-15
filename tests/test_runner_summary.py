@@ -1,0 +1,297 @@
+"""run_pass returns a per-pass summary dict (consumed by the web layer)."""
+
+import songmirror.engine.runner as runner
+from songmirror.engine.config import Options
+
+
+def _opts(**kw):
+    base = dict(execute=False, loop=False, interval_s=900, playlists="",
+                max_removals=25, max_adds=200, download_dir="", storefront="us",
+                cache_file="x", song_cache_file=":memory:")
+    base.update(kw)
+    return Options(**base)
+
+
+class _FakeSongs:
+    def close(self):
+        pass
+
+
+class _FakeSource:
+    """Minimal Spotify-shaped source of truth for run_target."""
+
+    source, name = "spotify", "Spotify"
+
+    def playlist_name(self, pl):
+        return pl.get("name", "")
+
+    def playlist_id(self, pl):
+        return pl.get("id")
+
+
+def test_oneway_returns_summary_shape(monkeypatch):
+    monkeypatch.setattr(runner.spotify, "client", lambda writable=False: object())
+    monkeypatch.setattr(runner.spotify, "playlists_by_name", lambda sp: {})
+    monkeypatch.setattr(runner, "build_targets", lambda opts, sp=None: [])
+    s = runner.run_pass(_opts())
+    assert s["mode"] == "oneway"
+    assert s["ok"] is True
+    assert s["per_target"] == []
+    assert isinstance(s["duration_s"], float)
+
+
+def test_non_spotify_oneway_does_not_require_an_unselected_spotify_account(monkeypatch):
+    class Source:
+        source, name = "tidal", "TIDAL"
+
+        @staticmethod
+        def list_playlists():
+            return {}
+
+    def unexpected_spotify(*args, **kwargs):
+        raise AssertionError("Spotify should not be initialized when it is not participating")
+
+    monkeypatch.setattr(runner.spotify, "client", unexpected_spotify)
+    monkeypatch.setattr(runner, "build_one", lambda *args, **kwargs: Source())
+    monkeypatch.setattr(runner, "build_targets", lambda opts, sp=None: [])
+
+    summary = runner.run_pass(_opts(sync_source="tidal", providers="tidal,deezer"))
+
+    assert summary["ok"] is True
+    assert summary["per_target"] == []
+
+
+def test_non_spotify_oneway_skips_unconfigured_spotify_when_providers_are_auto(monkeypatch):
+    class Source:
+        source, name = "tidal", "TIDAL"
+
+        @staticmethod
+        def list_playlists():
+            return {}
+
+    def unavailable_spotify(**kwargs):
+        raise RuntimeError("Missing required environment variable: SPOTIFY_CLIENT_ID")
+
+    monkeypatch.setattr(runner.spotify, "client", unavailable_spotify)
+    monkeypatch.setattr(runner, "build_one", lambda *args, **kwargs: Source())
+    monkeypatch.setattr(runner, "build_targets", lambda opts, sp=None: [])
+
+    summary = runner.run_pass(_opts(sync_source="tidal", providers=""))
+
+    assert summary["ok"] is True
+    assert summary["per_target"] == []
+
+
+def test_nway_wraps_accumulated_summary(monkeypatch):
+    monkeypatch.setattr(runner.spotify, "client", lambda writable=False: object())
+    monkeypatch.setattr(runner.spotify, "playlists_by_name", lambda sp: {})
+    monkeypatch.setattr(runner.archive, "connect", lambda f: _FakeSongs())
+    monkeypatch.setattr(runner, "_post_sync", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner, "_run_nway",
+        lambda opts, sp, selected, songs, should_continue=None: [runner._summary_entry("N-way", {"added": 3, "removed": 1})],
+    )
+    s = runner.run_pass(_opts(sync_mode="nway"))
+    assert s["mode"] == "nway"
+    assert s["per_target"][0]["added"] == 3
+    assert s["per_target"][0]["removed"] == 1
+    assert s["per_target"][0]["skipped"] == 0  # defaulted keys always present
+
+
+def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
+    from songmirror.engine import archive
+    from songmirror.services.playlists import PlaylistLink
+
+    songs = archive.connect(str(tmp_path / "s.db"))
+
+    class FakeTarget:
+        name, tag, source = "Apple Music", "apple", "apple"
+
+        def __init__(self, cache_file):
+            self.cache_file = cache_file
+
+        def list_playlists(self):  # a target playlist named differently from the source
+            return {"gym music": {"id": "t99", "attributes": {"name": "Gym Music"}}}
+
+        def playlist_id(self, pl):
+            return pl.get("id")
+
+        def playlist_count(self, pl):
+            return None
+
+        def is_editable(self, pl):
+            return True
+
+        def create(self, sp):
+            raise AssertionError("must not create; the paired target already exists")
+
+    captured = {}
+
+    def fake_mirror_pair(target, sp_tracks, sp_playlist, tgt_playlist, cache, songs_, *,
+                         execute, max_removals, max_adds, drain_removals=False, should_continue=None,
+                         source_key="spotify", source_name="Spotify", name=None):
+        captured["tgt_id"] = tgt_playlist["id"]
+        return {"clean": True, "added": 1, "removed": 0, "missing": 0, "held": 0,
+                "deferred": 0, "removals_skipped": 0, "target_count": 1}
+
+    monkeypatch.setattr(runner, "mirror_pair", fake_mirror_pair)
+
+    selected = [{"id": "sp1", "name": "Workout", "snapshot_id": "snap1"}]
+    link = PlaylistLink(name="Pair", members={"spotify": "sp1", "apple": "t99"}, id="LINK1")
+    agg = runner.run_target(FakeTarget(str(tmp_path / "c.json")), selected, lambda pl: [],
+                            songs, _opts(execute=True), links=[link], source=_FakeSource())
+
+    assert captured["tgt_id"] == "t99"          # paired target used, not same-name match
+    assert agg["added"] == 1
+    assert archive.get_state(songs, "LINK1", "apple") is not None  # state keyed by the link id
+    songs.close()
+
+
+def test_run_target_stops_between_playlists_on_control(tmp_path):
+    # The Stop/Pause hook: run_target checks should_continue at each playlist
+    # boundary and halts, leaving the rest for a re-run.
+    from songmirror.engine import archive
+    from songmirror.engine.runner import run_target
+
+    songs = archive.connect(str(tmp_path / "s.db"))
+    names = []
+
+    class Source:
+        source, name = "spotify", "Spotify"
+
+        def playlist_name(self, pl):
+            names.append(pl["name"])  # counts playlists whose iteration actually starts
+            return pl["name"]
+
+        def playlist_id(self, pl):
+            return pl.get("id")
+
+    class Target:
+        name, tag, source = "Apple Music", "apple", "apple"
+        cache_file = str(tmp_path / "c.json")
+
+        def list_playlists(self):
+            return {}  # nothing exists -> dry-run "would create" path, no writes
+
+        def playlist_id(self, pl):
+            return pl.get("id")
+
+    control = iter(["run", "stop"])  # process the 1st playlist, stop before the 2nd
+    selected = [{"id": "p1", "name": "One"}, {"id": "p2", "name": "Two"}]
+    run_target(Target(), selected, lambda pl: [], songs, _opts(),
+               source=Source(), should_continue=lambda: next(control, "stop"))
+    songs.close()
+    assert names == ["One"]  # halted at the playlist boundary, never reached "Two"
+
+
+def test_mirror_pair_non_spotify_source_never_writes_links(tmp_path):
+    # Safety: the archive `links` table is Spotify-anchored and load-bearing for
+    # N-way identity, so a non-Spotify one-way source must never write to it —
+    # it falls back to track-key matching instead.
+    from songmirror.engine import archive
+    from songmirror.engine.targets.base import mirror_pair
+
+    songs = archive.connect(str(tmp_path / "s.db"))
+
+    class FakeTarget:
+        name, tag, source = "YouTube Music", "yt", "ytmusic"
+        cache_file = str(tmp_path / "c.json")
+
+        def playlist_tracks(self, pl):
+            return []
+
+        def track_id(self, t):
+            return t.get("videoId")
+
+        def expected_ids(self, tracks, links, cache):
+            return {}
+
+        def prefetch(self, tracks, cache):
+            pass
+
+        def resolve(self, track, cache):
+            return f"vid_{track['name']}", "search"
+
+        def add(self, pl, ids):
+            pass
+
+        def remove(self, pl, t):
+            pass
+
+    src = [{"id": "ap1", "name": "Song A", "artists": ["Artist"], "isrc": "US123", "added_at": "2020"}]
+    res = mirror_pair(FakeTarget(), src, {"name": "Mix"}, {"id": "p1"}, {}, songs,
+                      execute=True, max_removals=25, max_adds=200,
+                      source_key="apple", source_name="Apple Music", name="Mix")
+    assert res["added"] == 1
+    assert songs.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 0  # never Spotify-polluted
+    songs.close()
+
+
+def test_held_removals_name_the_track_playlist_service_and_reason():
+    from songmirror.engine.targets.base import held_removals
+
+    tracks = [{"name": "Guzarish", "artist": "Sonu Nigam"}]
+    over_cap = held_removals("YouTube Music", "Aurora", tracks, 25)
+    assert over_cap == [{"target": "YouTube Music", "playlist": "Aurora", "track": "Guzarish",
+                         "artist": "Sonu Nigam",
+                         "reason": "the batch was larger than this sync's cap of 25"}]
+    # A cap of zero is a different situation with a different fix, so it reads differently.
+    assert "mirroring is off" in held_removals("Apple Music", "Sleep", tracks, 0)[0]["reason"]
+
+
+def test_summary_detail_is_bounded_but_counts_are_not():
+    dest = []
+    runner._collect_held(dest, [{"track": str(i)} for i in range(runner.HELD_REMOVAL_DETAIL + 20)])
+    runner._collect_held(dest, [{"track": "overflow"}])
+    assert len(dest) == runner.HELD_REMOVAL_DETAIL
+    # The count travels separately, so truncating the listing never understates the total.
+    assert runner._summary_entry("N-way", {"removals_skipped": 999, "held_removals": dest})["removals_skipped"] == 999
+
+
+def test_summary_entry_carries_detail_and_defaults_it_empty():
+    assert runner._summary_entry("N-way", {})["held_removals"] == []
+    entry = runner._summary_entry("N-way", {"held_removals": [{"track": "x"}]})
+    assert entry["held_removals"] == [{"track": "x"}]
+
+
+class _Peer:
+    """Minimal N-way peer: every playlist exists, is editable, and needs no create."""
+
+    def __init__(self, source):
+        self.source, self.name, self.tag = source, source.title(), source
+        self.cache_file = ""
+
+    def list_playlists(self):
+        return {"aurora": {"id": f"{self.source}-aurora"}}
+
+    def is_editable(self, pl):
+        return True
+
+
+def test_nway_counts_and_names_a_playlist_it_could_not_sync(monkeypatch):
+    # A reconcile that raises is caught so the remaining playlists still run, which
+    # leaves the pass ok=True. The count and the reason are what stop that from
+    # reading as a clean pass in the dashboard.
+    monkeypatch.setattr(runner, "build_peers", lambda opts, sp, songs=None: [_Peer("spotify"), _Peer("apple")])
+    monkeypatch.setattr(runner, "load_cache", lambda f: {})
+    monkeypatch.setattr(runner, "save_cache", lambda f, c: None)
+
+    def boom(*a, **kw):
+        raise RuntimeError("403 Client Error: Forbidden for url: .../v1/tracks?ids=7HFA")
+
+    monkeypatch.setattr(runner, "reconcile", boom)
+    entry = runner._run_nway(_opts(sync_mode="nway", execute=True), object(),
+                             [{"name": "Aurora"}], _FakeSongs())[0]
+
+    assert entry["failed"] == 1
+    assert entry["failures"] == [{"playlist": "Aurora",
+                                  "error": "403 Client Error: Forbidden for url: .../v1/tracks?ids=7HFA"}]
+    assert entry["added"] == 0 and entry["removed"] == 0
+
+
+def test_failure_detail_is_bounded_but_the_count_is_not():
+    counts, dest = {"failed": 0}, []
+    for i in range(runner.FAILURE_DETAIL + 5):
+        runner._collect_failure(counts, dest, f"p{i}", RuntimeError("nope"))
+    assert counts["failed"] == runner.FAILURE_DETAIL + 5   # total is never truncated
+    assert len(dest) == runner.FAILURE_DETAIL

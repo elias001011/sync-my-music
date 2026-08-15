@@ -1,0 +1,127 @@
+"""Account connectors: status + the connect entry point per auth kind."""
+
+from songmirror.services.accounts import CONNECTORS
+from songmirror.services.accounts.base import DeviceCode
+from songmirror.services.settings import SettingsStore
+
+
+def _conn(cid, tmp_path):
+    return CONNECTORS[cid](SettingsStore(dir=tmp_path))
+
+
+def test_registry_has_all_supported_services():
+    assert set(CONNECTORS) == {
+        "spotify", "tidal", "qobuz", "deezer", "amazon", "apple", "ytmusic", "jellyfin"
+    }
+
+
+def test_apple_unconfigured_then_submit_stores(tmp_path, monkeypatch):
+    c = _conn("apple", tmp_path)
+    assert c.status().state == "unconfigured"
+    monkeypatch.setattr(c, "_validate", lambda: (True, "ok"))
+    st = c.submit({"APPLE_BEARER_TOKEN": "b", "APPLE_USER_TOKEN": "u"})
+    assert st.state == "connected"
+    assert c._store.get("APPLE_USER_TOKEN") == "u"
+
+
+def test_jellyfin_unconfigured_then_submit(tmp_path, monkeypatch):
+    c = _conn("jellyfin", tmp_path)
+    assert c.status().state == "unconfigured"
+    monkeypatch.setattr(c, "_ping", lambda: (True, ""))
+    assert c.submit({"JELLYFIN_URL": "http://x", "JELLYFIN_API_KEY": "k"}).state == "connected"
+
+
+def test_spotify_begin_redirect_returns_url(tmp_path, monkeypatch):
+    c = _conn("spotify", tmp_path)
+    assert c.status().state == "unconfigured"
+
+    class FakeOAuth:
+        def get_authorize_url(self):
+            return "https://accounts.spotify.com/authorize?x=1"
+
+    monkeypatch.setattr(c, "_oauth", lambda redirect_uri: FakeOAuth())
+    url = c.begin_redirect("http://host/oauth/spotify/callback")
+    assert url.startswith("https://accounts.spotify.com/authorize")
+    assert c._store.get("SPOTIFY_REDIRECT_URI") == "http://host/oauth/spotify/callback"
+
+
+def test_ytmusic_begin_device_surfaces_code(tmp_path, monkeypatch):
+    c = _conn("ytmusic", tmp_path)
+    assert c.status().state == "unconfigured"
+
+    class FakeCreds:
+        def get_code(self):
+            return {"user_code": "ABCD-1234", "verification_url": "https://google.com/device",
+                    "device_code": "dev123", "interval": 5}
+
+    monkeypatch.setattr(c, "_creds", lambda: FakeCreds())
+    dc = c.begin_device()
+    assert isinstance(dc, DeviceCode)
+    assert dc.user_code == "ABCD-1234"
+    assert dc.device_code == "dev123"
+
+
+def test_ytmusic_enable_disable_browser_mode(tmp_path, monkeypatch):
+    # Pasting music.youtube.com headers writes a browser-auth file, validates the
+    # cookies with one call, and flips on the no-quota (youtubei) mode; disable reverts.
+    import ytmusicapi
+
+    c = _conn("ytmusic", tmp_path)
+    monkeypatch.setenv("YTMUSIC_BROWSER_AUTH", str(tmp_path / "browser.json"))
+
+    def fake_setup(filepath=None, headers_raw=None):
+        with open(filepath, "w") as f:
+            f.write("{}")
+
+    monkeypatch.setattr(ytmusicapi, "setup", fake_setup)
+    monkeypatch.setattr("ytmusicapi.YTMusic",
+                        lambda *a, **k: type("Y", (), {
+                            "get_library_playlists": lambda self, limit=None: [],
+                            "get_account_info": lambda self: {"accountName": "me"},
+                        })())
+
+    assert c.enable_browser("Cookie: x").state == "connected"
+    assert c._store.get("YTMUSIC_PREFER_BROWSER") == "1"
+    assert c.status().detail.startswith("no-quota")  # browser mode surfaces as connected
+    assert c.enable_browser("").state == "error"  # empty paste rejected
+    c.disable_browser()
+    assert c._store.get("YTMUSIC_PREFER_BROWSER") == "0"
+
+
+def test_ytmusic_expired_cookies_report_expired_not_connected(tmp_path, monkeypatch):
+    # A stale cookie file still parses and answers logged-out, so presence alone
+    # can't mean "connected" — that's what left a dead session syncing silently.
+    import ytmusicapi
+
+    c = _conn("ytmusic", tmp_path)
+    path = tmp_path / "browser.json"
+    path.write_text("{}")
+    monkeypatch.setenv("YTMUSIC_BROWSER_AUTH", str(path))
+    monkeypatch.setenv("YTMUSIC_PREFER_BROWSER", "1")  # env, not the store: monkeypatch undoes it
+
+    monkeypatch.setattr(ytmusicapi, "YTMusic",
+                        lambda *a, **k: type("Y", (), {"get_account_info": lambda self: {}})())
+    assert c.status().state == "expired"  # -> dashboard "sign-in expired" card + Reconnect
+
+
+def test_spotify_status_reports_a_refused_isrc_app(tmp_path, monkeypatch):
+    # The OAuth token can be perfectly healthy while the ISRC lookup app (a different
+    # app, a different grant) is refused. Nothing else goes red, so status has to say
+    # it or the sync just gets quietly slower.
+    from songmirror.engine import spotify
+
+    c = _conn("spotify", tmp_path)
+    c._store.save({"SPOTIFY_CLIENT_ID": "id", "SPOTIFY_CLIENT_SECRET": "sec"})
+    token = tmp_path / "token"
+    token.write_text("{}")
+    monkeypatch.setenv("SPOTIFY_TOKEN_CACHE", str(token))
+
+    monkeypatch.setattr(spotify, "isrc_app_problem", lambda: None)
+    assert c.status().state == "connected"
+
+    monkeypatch.setattr(spotify, "isrc_app_problem",
+                        lambda: "its owner account no longer has an active Spotify Premium subscription")
+    st = c.status()
+    assert st.state == "error"                 # -> dashboard "needs a look" card
+    assert "Premium" in st.detail
+    assert "continue" in st.detail             # and says the sync is degraded, not stopped
