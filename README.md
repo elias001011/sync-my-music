@@ -2,15 +2,28 @@
 
 # Sync My Music
 
-Self-hosted music database, cross-service playlist synchronization and unified listening recaps. Built for a private machine or Termux server and optionally reachable only on your home LAN.
+**Your self-hosted music control center.** Keep a canonical copy of your music
+library, synchronize playlists across services, bridge open-source players, and
+combine listening recaps without handing your history to another hosted platform.
 
-**Canonical library · playlist version history · manual/automatic syncs · Musify export · Sonora backup/P2P bridge · consolidated recaps · persistent logs**
+Built for a private computer, home server, or Termux device and designed to be
+used from your local network.
 
-> This project is an MIT-licensed adaptation of [SongMirror](https://github.com/ahnafnafee/songmirror). Its mature playlist matching and synchronization engine remains the foundation; the canonical database, recap ingestion, Musify/Sonora surfaces and LAN bridge are maintained here.
+**Canonical library · cross-service playlist sync · version history · Musify export · Sonora backup/P2P bridge · unified listening recaps · searchable logs**
 
-See [the architecture and synchronization model](docs/architecture.md) for the distinction between the canonical database, provider mirrors, event scrobbles and replaceable recap snapshots.
+> [!IMPORTANT]
+> Sync My Music is currently an early self-hosted release. The LAN dashboard has
+> no application login yet. Do not expose it to the public internet or port-forward
+> its port. Service tokens and browser-session credentials must be treated like passwords.
 
-[Quick Start](#-quick-start) · [Features](#-features) · [Screenshots](#-screenshots) · [Docker](#-always-running-docker) · [How it works](#-how-it-works) · [Report Bug][github-issues-link] · [Request Feature][github-issues-link]
+Sync My Music is an MIT-licensed adaptation of
+[SongMirror](https://github.com/ahnafnafee/songmirror). SongMirror provides the
+mature playlist matching, transfer, and reconciliation engine. This project adds
+the canonical database, listening model, playlist recovery, operational UI, and
+bridges for [Musify](https://github.com/gokadzev/Musify) and
+[Sonora](https://github.com/gmstyle/sonora). See [Credits](#-credits) for details.
+
+[Quick Start](#-quick-start) · [What it does](#-what-it-does) · [Integrations](#-integrations) · [Architecture](docs/architecture.md) · [Roadmap](#-current-status-and-roadmap) · [Report Bug][github-issues-link]
 
 <!-- SHIELD GROUP -->
 
@@ -23,29 +36,24 @@ See [the architecture and synchronization model](docs/architecture.md) for the d
 [![Issues][issues-shield]][issues-link]
 [![Last commit][last-commit-shield]][last-commit-link]
 
-**Share this project**
-
-[![][share-x-shield]][share-x-link]
-[![][share-reddit-shield]][share-reddit-link]
-[![][share-linkedin-shield]][share-linkedin-link]
-
-<sup>Set it up once — every playlist you curate stays mirrored across every service, in date-added order.</sup>
-
-<a href="./.github/assets/songmirror-demo.mp4"><img src="./.github/assets/songmirror-demo.gif" alt="SongMirror demo — logo reveal, dashboard, one-way and bidirectional sync setup, live playlist transfers, and ISRC-accurate matching across seven music services" width="88%"></a>
-
-<sup>▶ <a href="./.github/assets/songmirror-demo.mp4">Watch the 1080p version</a></sup>
+<sup>One private database for your music identity, even when your listening is spread across different apps.</sup>
 
 </div>
 
 > [!NOTE]
-> **Web app + headless CLI, one engine.** Click through a browser UI to connect services, build syncs, and transfer playlists — or run it `.env` + cron style. Both drive the same sync core.
+> **Web app + headless CLI, one engine.** Use the browser UI for accounts,
+> playlists, recaps, recovery, and logs, or run the same synchronization core
+> through `.env` and cron.
 
 <details>
 <summary><kbd>Table of contents</kbd></summary>
 
 #### TOC
 
-- [✨ Features](#-features)
+- [✨ What it does](#-what-it-does)
+- [🔌 Integrations](#-integrations)
+- [🧠 Data and recap model](#-data-and-recap-model)
+- [🚧 Current status and roadmap](#-current-status-and-roadmap)
 - [📸 Screenshots](#-screenshots)
 - [🚀 Quick Start](#-quick-start)
 - [🐳 Always running: Docker](#-always-running-docker)
@@ -67,6 +75,7 @@ See [the architecture and synchronization model](docs/architecture.md) for the d
 - [🗃️ Caching &amp; song archive](#️-caching--song-archive)
 - [🧱 Project layout](#-project-layout)
 - [🩺 Troubleshooting](#-troubleshooting)
+- [🤝 Credits](#-credits)
 - [📄 License](#-license)
 
 ####
@@ -75,23 +84,137 @@ See [the architecture and synchronization model](docs/architecture.md) for the d
 
 </details>
 
-## ✨ Features
+## ✨ What it does
 
-SongMirror keeps your playlists identical everywhere without manual re-adding, one-by-one copying, or a paid cloud service holding your library. It is **cross-platform, self-hosted, and open source**.
+### A library that belongs to you
 
-- 🔁 **True mirroring, not append-only** — adds _and_ removals. Choose a source of truth (Spotify by default) and the others follow it.
-- ⇄ **Bidirectional N-way sync** — an add or removal on _any_ connected service propagates to all the others, echo-free, behind removal guards.
-- 🎯 **ISRC-accurate matching** — exact recording identity where available, with Unicode-aware fuzzy title/artist/duration fallbacks (feat-credit drift, "- 2015 Remaster" suffixes, non-Latin scripts, video-only uploads — all handled).
-- 🎛️ **Multiple named syncs** — set up as many independent syncs as you like, each with its own services, playlists, schedule, and safety caps.
-- ↪️ **One-off transfers** — copy any playlist from one service to another with a live progress bar; **pause, resume, or stop** mid-copy, and manually resolve unmatched tracks.
-- 🌐 **Followed playlists** — sync and transfer playlists you follow but don't own, not just ones you created.
-- 💿 **Local download mirror** — keep offline audio, one folder per playlist in **Jellyfin's** `AlbumArtist/Album` layout, with covers and an auto-updated `.m3u8`.
-- 🛡️ **Safety rails** — dry-run by default, per-pass add/removal caps, net-loss protection, empty-snapshot guard, fail-closed on expired tokens.
-- 🗃️ **Ever-growing song archive** — every track ever seen is recorded in a local SQLite database (name, artist, album, ISRC, raw metadata, first/last seen).
-- 🐳 **Runs anywhere** — one `docker compose up -d` for the browser app, or plain CLI + cron / Task Scheduler.
+- **Canonical SQLite database** for tracks, artists, albums, service identities,
+  playlists, ordered items, listening data, sync runs, and application logs.
+- **Provider-aware identities** keep Spotify, YouTube, Apple Music, Sonora, and
+  other catalog IDs attached to the same canonical recording.
+- **Independent surfaces** for playlists, liked tracks, followed artists, saved
+  albums/playlists, and listening summaries. Unsupported surfaces are skipped
+  explicitly instead of being silently treated as empty.
 
-> [!IMPORTANT]
-> **Self-hosted and private by design.** Your listening data and credentials never leave your machine. The web UI has **no login** — bind it to your LAN and don't port-forward it to the internet.
+### Playlist synchronization with recovery
+
+- **One-way source-of-truth sync** or **bidirectional N-way reconciliation**.
+- **Multiple named sync jobs**, each with its own services, playlist scope,
+  schedule, addition limit, and removal limit.
+- **One-off transfers** with progress, pause, resume, stop, and manual resolution
+  for unmatched tracks.
+- **ISRC-first matching**, cached provider links, and Unicode-aware fuzzy
+  title/artist/duration fallback.
+- **Bounded playlist versions** captured before mutations, with preview and
+  recoverable restoration from the web interface.
+
+### One listening recap across apps
+
+- Append-only, deduplicated listening events through a
+  ListenBrainz-compatible submission endpoint.
+- Replaceable monthly snapshots for manual Musify and Sonora imports.
+- Combined yearly and monthly views without writing fabricated listening history
+  back to commercial services.
+
+### Operations you can actually inspect
+
+- Pause a problematic provider without deleting its imported data.
+- Search and filter the latest 5,000 structured application logs in the UI.
+- Preview writes, cap additions/removals, and fail closed when authentication or
+  a provider read looks unsafe.
+- Run with Docker, directly with Python, or on a small always-on Termux server.
+
+## 🔌 Integrations
+
+| Service / app | Playlist sync | Other surfaces | Authentication / transport |
+| --- | --- | --- | --- |
+| **Spotify** | Read and write | Catalog matching | OAuth; optional `sp_dc` write mode |
+| **YouTube Music** | Read and write | Catalog matching | Data API OAuth or browser-session mode |
+| **Apple Music** | Read and write | Catalog metadata | Pasted Bearer + Media-User-Token |
+| **TIDAL** | Read and write | Catalog metadata | Pasted web-player Bearer |
+| **Qobuz** | Read and write | Catalog metadata | Pasted web-player API headers |
+| **Deezer** | Read and write | Catalog metadata | Renewable web `refresh-token` session |
+| **Amazon Music** | Read and write | Catalog metadata | Minimized, renewable web session |
+| **Jellyfin** | Browse / local mirror | Covers and local library | Server URL + API key |
+| **Musify** | Export through custom playlist links | Replaceable recap import | Manual bridge; no Musify password stored |
+| **Sonora** | Backup playlists and local entries | Likes, artists, albums, history | Backup-v2 ZIP or paired LAN P2P |
+
+> [!WARNING]
+> Browser-backed connectors use undocumented first-party web interfaces and may
+> break when a service changes its web client. Every provider can be disabled
+> independently while its local data remains available.
+
+### Musify bridge
+
+[Musify](https://github.com/gokadzev/Musify) remains an independent mobile app;
+Sync My Music does not modify its Hive database or impersonate the app. Instead,
+the bridge uses formats Musify can consume safely:
+
+- Export a playlist from any readable provider, resolve its tracks to YouTube
+  Music IDs, and generate a `musify://playlist/custom/...` link.
+- Import Musify wrapped/listening-stat exports into the unified recap.
+- Treat every imported month as a replacement snapshot, never as a new batch of
+  plays to add on top of the previous export.
+
+This keeps the workflow manual where Musify requires it while still making the
+canonical database useful as a conversion and recovery layer.
+
+### Sonora bridge
+
+The [Sonora](https://github.com/gmstyle/sonora) adapter understands its backup-v2
+structures and can exchange more than playlists:
+
+- Liked songs, followed artists, liked albums, and liked playlists.
+- Local playlists and their ordered entries.
+- Listening history, imported as replaceable monthly recap snapshots.
+- Backup ZIP import/export for explicit, portable transfers.
+- Optional LAN discovery and peer synchronization using Sonora's device protocol.
+
+LAN discovery is disabled by default. When enabled, pairing requires a PIN and
+the user chooses which surfaces are exchanged. Search history and application
+settings are intentionally excluded from the canonical music database.
+
+## 🧠 Data and recap model
+
+`data/sync_music.db` is the product database. Provider libraries are mirrors of
+external state; the canonical entities are the durable local representation.
+The original matching cache remains separate so catalog resolution and personal
+library history do not become the same concern.
+
+Listening data deliberately has two semantics:
+
+- **Events** represent individual plays and are appended once, with source-ID or
+  fingerprint deduplication.
+- **Snapshots** represent totals exported manually by Musify or Sonora. Importing
+  the same month again replaces that source/month. If July first contains 20
+  minutes and a later export contains 40, the recap reports **40**, not 60.
+
+See [docs/architecture.md](docs/architecture.md) for the complete schema,
+surface model, playlist safety rules, and Sonora peer protocol.
+
+## 🚧 Current status and roadmap
+
+Already implemented:
+
+- Canonical database and library UI.
+- Existing SongMirror playlist engine, transfers, matching, and named sync jobs.
+- Playlist version history and recovery.
+- Musify playlist export and recap snapshot import.
+- Sonora backup-v2 import/export and configurable LAN pairing/sync.
+- Unified recaps, persistent logs, and per-provider pause switches.
+
+Still evolving:
+
+- Automatic liked-track, followed-artist, and saved-album adapters for every
+  commercial provider.
+- First-class multiple-account configuration in every inherited connector.
+- Authentication and authorization suitable for exposing the dashboard outside
+  a trusted LAN.
+- More import formats, conflict tooling, integration tests, and refreshed project screenshots.
+
+Contributions are welcome once the repository is public, especially provider
+adapters that respect account security and clearly advertise their read/write
+capabilities.
 
 <div align="right">
 
@@ -101,15 +224,19 @@ SongMirror keeps your playlists identical everywhere without manual re-adding, o
 
 ## 📸 Screenshots
 
+> [!NOTE]
+> These screenshots show the inherited playlist-management foundation. Updated
+> captures of the Library, Recaps, Logs, Musify, and Sonora views are on the roadmap.
+
 <div align="center">
 
 **One dashboard for every library — sync status, jobs, live activity, and service health**
 
-<img src="./.github/assets/dashboard.png" alt="SongMirror dashboard showing sync status, configured jobs, live activity, and health for Spotify, TIDAL, Qobuz, Deezer, Amazon Music, Apple Music, YouTube Music, and Jellyfin" width="82%">
+<img src="./.github/assets/dashboard.png" alt="Sync dashboard showing status, configured jobs, live activity, and service health" width="82%">
 
 **Set up any number of syncs — one-way or bidirectional — in a short wizard**
 
-<img src="./.github/assets/sync-wizard.png" alt="The SongMirror setup wizard selecting services for a bidirectional sync across Spotify, TIDAL, Qobuz, Deezer, Amazon Music, Apple Music, and YouTube Music" width="82%">
+<img src="./.github/assets/sync-wizard.png" alt="Setup wizard selecting services for a bidirectional music sync" width="82%">
 
 **Connect every service in your browser — one-click OAuth, guided token paste, or an API key**
 
@@ -158,7 +285,7 @@ uv run uvicorn songmirror.web:app --host 0.0.0.0 --port 8080
 
 ## 🐳 Always running: Docker
 
-The Docker container is the recommended deployment: it serves the web UI, runs your syncs on their schedules, and restarts with the host. It runs as **`songmirror`** and persists all auth + caches in `./data`.
+The Docker container is the recommended deployment: it serves the web UI, runs your syncs on their schedules, and restarts with the host. It runs as **`sync-my-music`** and persists the canonical database, auth, and caches in `./data`.
 
 ```bash
 docker compose up -d --build     # build + start in the background
@@ -171,7 +298,7 @@ docker compose logs -f           # watch it work
 | | |
 | --- | --- |
 | **Port** | The UI is published on host **8888** (the `8888:8080` mapping in `docker-compose.yml`; change the host side if it clashes). **LAN-only** — don't port-forward it to the internet; the UI has no login yet. |
-| **Persistence** | `./data` holds credentials, tokens, caches, and the song archive. Back it up to keep your setup across rebuilds. |
+| **Persistence** | `./data` holds the canonical database, playlist versions, recaps, logs, credentials, tokens, and caches. Back it up to keep your setup across rebuilds. |
 | **Downloads** | Set `DOWNLOAD_DIR` (in `.env` or your shell) to your host music dir (e.g. `F:\Torrent\Music`); compose bind-mounts it to `/music`. From Docker, set `JELLYFIN_URL` to `http://host.docker.internal:8096`. |
 | **Expired sessions** | Renewable sessions recover on the next scheduled or manual pass. TIDAL web, Qobuz, and Apple Music tokens must be re-pasted on the Accounts page when rejected; no restart is needed. |
 
@@ -252,7 +379,7 @@ uv tool install spotdl       # isolated CLI; or: pipx install spotdl
 - **Playlist covers in Jellyfin** — Jellyfin ignores a cover file next to an m3u, so set `JELLYFIN_URL` + `JELLYFIN_API_KEY` and each pass uploads the real playlist cover via the Jellyfin API.
 - **Audio quality** — the source is YouTube, so without a YT Music **Premium** cookie the ceiling is ~128–160 kbps. `LOCAL_MIRROR_FORMAT=opus` keeps YouTube's native stream without an mp3 re-encode; a Premium cookie (`LOCAL_MIRROR_COOKIE_FILE`) unlocks 256 kbps AAC. Selecting `flac` changes the output container but cannot turn a lossy source into lossless audio.
 
-Monochrome's current FLAC path uses browser-gated, single-use playback resources rather than a stable, provider-authorized file-export API, so SongMirror does not automate it. Use the local mirror only for content you own or are otherwise authorized to copy.
+Monochrome's current FLAC path uses browser-gated, single-use playback resources rather than a stable, provider-authorized file-export API, so Sync My Music does not automate it. Use the local mirror only for content you own or are otherwise authorized to copy.
 
 <div align="right">
 
@@ -266,7 +393,7 @@ In the web app, the **Accounts** page walks you through each service and shows t
 
 ### Credential renewal
 
-SongMirror refreshes credentials **just in time**, not with a separate token-refresh timer. Every manual or scheduled sync pass validates the connectors it uses and renews supported access tokens before the first request (or once after an authentication rejection). It is normal for a short-lived access token to expire between passes—the durable refresh token or renewal cookie is what matters. The Accounts page validates status when it loads or regains focus, but it is not the background keep-alive; enabled sync schedules are.
+Sync My Music refreshes credentials **just in time**, not with a separate token-refresh timer. Every manual or scheduled sync pass validates the connectors it uses and renews supported access tokens before the first request (or once after an authentication rejection). It is normal for a short-lived access token to expire between passes—the durable refresh token or renewal cookie is what matters. The Accounts page validates status when it loads or regains focus, but it is not the background keep-alive; enabled sync schedules are.
 
 | Service | Renewal behavior |
 | --- | --- |
@@ -275,7 +402,7 @@ SongMirror refreshes credentials **just in time**, not with a separate token-ref
 | **Qobuz** | The pasted `X-User-Auth-Token` is used until Qobuz rejects it, then must be captured again. |
 | **Deezer** | The short-lived Pipe JWT renews automatically from the saved `refresh-token` before use and once after a `401/403`; rotated renewal state is persisted. |
 | **Amazon Music** | The web access token renews from the allowlisted signed-in browser cookies shortly before known expiry and once after a `401/403`; refreshed device context and rotated cookies are persisted. Logout, security changes, or server-side revocation still require a fresh capture. |
-| **Apple Music** | The pasted Bearer and Media-User-Token cannot be renewed by SongMirror and must be captured again after rejection. |
+| **Apple Music** | The pasted Bearer and Media-User-Token cannot be renewed by Sync My Music and must be captured again after rejection. |
 | **YouTube Music** | Data API OAuth refreshes automatically within 60 seconds of expiry. Browser mode attempts Google's cookie rotation whenever a sync target is built; an already-expired browser session must be exported again. |
 | **Jellyfin** | The API key has no access-token refresh cycle; replace it only if it is revoked or deleted. |
 
@@ -288,19 +415,19 @@ The web UI requests read + write scopes up front (Spotify is a write target in N
 
 ### TIDAL
 
-Sign in at <https://listen.tidal.com>, open DevTools → **Network**, open a playlist, and filter for `openapi.tidal.com/v2`. Copy a request's headers (or copy it as cURL) into the wizard. SongMirror keeps only the Bearer token and two-letter catalog country. An existing developer OAuth token remains supported as an environment fallback.
+Sign in at <https://listen.tidal.com>, open DevTools → **Network**, open a playlist, and filter for `openapi.tidal.com/v2`. Copy a request's headers (or copy it as cURL) into the wizard. Sync My Music keeps only the Bearer token and two-letter catalog country. An existing developer OAuth token remains supported as an environment fallback.
 
 Only catalog metadata and the signed-in user's playlists are used; playback assets are outside this integration. Browser tokens are short-lived, so re-paste when the account reports **Expired**.
 
 ### Qobuz
 
-Sign in at <https://play.qobuz.com>, open DevTools → **Network**, and filter for `api.json/0.2`. Choose any request containing `X-App-Id` and `X-User-Auth-Token`—including an authenticated `album/story` request—then copy its request headers or copy it as cURL and paste it into the wizard. SongMirror persists only those two values, sends them using the same header-based flow as the web player, and discards cookies and unrelated browser metadata. No business API approval or user id is required; existing partner credentials remain a compatible environment fallback.
+Sign in at <https://play.qobuz.com>, open DevTools → **Network**, and filter for `api.json/0.2`. Choose any request containing `X-App-Id` and `X-User-Auth-Token`—including an authenticated `album/story` request—then copy its request headers or copy it as cURL and paste it into the wizard. Sync My Music persists only those two values, sends them using the same header-based flow as the web player, and discards cookies and unrelated browser metadata. No business API approval or user id is required; existing partner credentials remain a compatible environment fallback.
 
 The adapter uses catalog search and playlist endpoints only—it does not request stream or file URLs.
 
 ### Deezer
 
-Sign in at <https://www.deezer.com>, open DevTools → **Network**, and reload the page. Filter for `auth.deezer.com/login/renew`, copy that request's headers (or copy it as cURL), and paste it into the renewal field. Firefox may instead copy the request cookies as a bare semicolon-delimited block; that shape is accepted too. SongMirror retains only the dedicated `refresh-token` cookie and uses it to renew Deezer's short-lived Pipe JWT automatically. You may also paste a current `pipe.deezer.com/api` request as an immediate bootstrap, but it is not required when renewal is configured. Playlist additions and removals both use the renewable Pipe session; no `arl` cookie is needed. Existing developer OAuth tokens remain a compatible environment fallback.
+Sign in at <https://www.deezer.com>, open DevTools → **Network**, and reload the page. Filter for `auth.deezer.com/login/renew`, copy that request's headers (or copy it as cURL), and paste it into the renewal field. Firefox may instead copy the request cookies as a bare semicolon-delimited block; that shape is accepted too. Sync My Music retains only the dedicated `refresh-token` cookie and uses it to renew Deezer's short-lived Pipe JWT automatically. You may also paste a current `pipe.deezer.com/api` request as an immediate bootstrap, but it is not required when renewal is configured. Playlist additions and removals both use the renewable Pipe session; no `arl` cookie is needed. Existing developer OAuth tokens remain a compatible environment fallback.
 
 ### Amazon Music
 
@@ -309,9 +436,9 @@ No developer approval is required for the default connector. It uses the same au
 1. Sign in at <https://music.amazon.com> and open DevTools → **Network**.
 2. Reload the page, filter for `config.json`, and select the signed-in request. (`pandaToken` works too when it appears, but it is not required.)
 3. Choose **Copy request headers** or **Copy as cURL**, then paste it into the renewal field.
-4. Optionally copy the signed-in `config.json` **Response** into the bootstrap field; SongMirror can normally fetch that device context using the renewal session.
+4. Optionally copy the signed-in `config.json` **Response** into the bootstrap field; Sync My Music can normally fetch that device context using the renewal session.
 
-SongMirror derives the same `AmznMusic` authorization value locally and refreshes it through `music.amazon.com/pandaToken` before expiry or once after an authentication rejection. It stores only a named allowlist of Amazon authentication/session cookies plus limited Music-client device context; analytics, experiment, AWS-console, CSRF, and other unrelated browser data are discarded. Those retained cookies are still sensitive, so keep SongMirror private on your LAN. A logout, password/security change, or Amazon-side revocation can still require one fresh capture.
+Sync My Music derives the same `AmznMusic` authorization value locally and refreshes it through `music.amazon.com/pandaToken` before expiry or once after an authentication rejection. It stores only a named allowlist of Amazon authentication/session cookies plus limited Music-client device context; analytics, experiment, AWS-console, CSRF, and other unrelated browser data are discarded. Those retained cookies are still sensitive, so keep Sync My Music private on your LAN. A logout, password/security change, or Amazon-side revocation can still require one fresh capture.
 
 This is an unsupported first-party web-client interface and Amazon can change it without notice. The documented [Amazon Music Web API](https://developer.amazon.com/docs/music/API_web_overview.html) is still a closed beta; approved partner credentials remain an optional fallback when configured through environment variables.
 
@@ -407,9 +534,11 @@ CLI entry: `uv run main.py` (thin shim) or `python -m songmirror`. Web entry: `s
 ```text
 songmirror/
   engine/       # provider-agnostic sync core (no web deps): runner, matching, targets/, spotify, downloads, archive
-  services/     # stateful services over the engine: accounts/ connectors, syncs, sync_service, transfers, playlists, settings
+  services/     # accounts, canonical DB, playlists, transfers, recaps, Sonora, settings, and logs
   web/          # FastAPI app: thin HTTP/SSE over services/ (routers/)
 frontend/       # React + Vite SPA (built and served by the API in production)
+data/           # runtime-only database, credentials, versions, recaps, logs, and provider caches
+docs/           # architecture and synchronization semantics
 ```
 
 **Adding another service**: subclass `MirrorTarget`, implement ~8 methods, add its builder to `engine/targets`' `_REGISTRY`, and add a matching `Connector` under `services/accounts`. All reconciliation — diff, ordering, safety rails, logging, snapshot-skip — is inherited.
@@ -436,34 +565,50 @@ frontend/       # React + Vite SPA (built and served by the API in production)
 
 </div>
 
+## 🤝 Credits
+
+Sync My Music exists because several open-source projects made different parts
+of a user-owned music stack possible:
+
+- [SongMirror](https://github.com/ahnafnafee/songmirror), created by
+  [Ahnaf An Nafee](https://github.com/ahnafnafee), is the foundation for service
+  connectors, track matching, playlist reconciliation, transfers, safety rails,
+  and much of the original web interface.
+- [Musify](https://github.com/gokadzev/Musify) inspired and defines the custom
+  playlist-link bridge and manual listening-stat import surface.
+- [Sonora](https://github.com/gmstyle/sonora) defines the backup-v2 structures
+  and device-to-device synchronization surface used by the Sonora bridge.
+
+Sync My Music is an independent community adaptation. It is not affiliated with
+Spotify, Google/YouTube, Apple, TIDAL, Qobuz, Deezer, Amazon, Jellyfin, or the
+maintainers of Musify and Sonora. Product names are used only to describe
+interoperability.
+
 ## 📄 License
 
-Copyright © 2026 [Ahnaf An Nafee](https://github.com/ahnafnafee).<br/>
-This project is [MIT](./LICENSE) licensed.
+This project is distributed under the [MIT License](./LICENSE).
+
+The original SongMirror copyright and license notice are preserved as required
+by the MIT License. New Sync My Music contributions are distributed under the
+same license unless stated otherwise.
 
 <!-- LINK GROUP -->
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
-[ci-shield]: https://img.shields.io/github/actions/workflow/status/ahnafnafee/songmirror/ci.yml?branch=main&label=CI&labelColor=black&logo=githubactions&logoColor=white&style=flat-square
-[ci-link]: https://github.com/ahnafnafee/songmirror/actions/workflows/ci.yml
-[license-shield]: https://img.shields.io/github/license/ahnafnafee/songmirror?color=F2601A&labelColor=black&style=flat-square
-[license-link]: https://github.com/ahnafnafee/songmirror/blob/main/LICENSE
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/elias001011/sync-my-music/ci.yml?branch=main&label=CI&labelColor=black&logo=githubactions&logoColor=white&style=flat-square
+[ci-link]: https://github.com/elias001011/sync-my-music/actions/workflows/ci.yml
+[license-shield]: https://img.shields.io/github/license/elias001011/sync-my-music?color=F2601A&labelColor=black&style=flat-square
+[license-link]: https://github.com/elias001011/sync-my-music/blob/main/LICENSE
 [python-shield]: https://img.shields.io/badge/python-3.13%2B-F2601A?labelColor=black&logo=python&logoColor=white&style=flat-square
 [python-link]: https://www.python.org/
 [docker-shield]: https://img.shields.io/badge/docker-ready-F2601A?labelColor=black&logo=docker&logoColor=white&style=flat-square
-[docker-link]: https://github.com/ahnafnafee/songmirror/blob/main/docker-compose.yml
-[stars-shield]: https://img.shields.io/github/stars/ahnafnafee/songmirror?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
-[stars-link]: https://github.com/ahnafnafee/songmirror/stargazers
-[forks-shield]: https://img.shields.io/github/forks/ahnafnafee/songmirror?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
-[forks-link]: https://github.com/ahnafnafee/songmirror/network/members
-[issues-shield]: https://img.shields.io/github/issues/ahnafnafee/songmirror?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
-[issues-link]: https://github.com/ahnafnafee/songmirror/issues
-[last-commit-shield]: https://img.shields.io/github/last-commit/ahnafnafee/songmirror?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
-[last-commit-link]: https://github.com/ahnafnafee/songmirror/commits/main
-[github-issues-link]: https://github.com/ahnafnafee/songmirror/issues
-[share-x-shield]: https://img.shields.io/badge/-share%20on%20x-black?labelColor=black&logo=x&logoColor=white&style=flat-square
-[share-x-link]: https://x.com/intent/tweet?text=SongMirror%20%E2%80%94%20self-hosted%20playlist%20sync%20across%20seven%20music%20services&url=https%3A%2F%2Fgithub.com%2Fahnafnafee%2Fsongmirror
-[share-reddit-shield]: https://img.shields.io/badge/-share%20on%20reddit-black?labelColor=black&logo=reddit&logoColor=white&style=flat-square
-[share-reddit-link]: https://www.reddit.com/submit?title=SongMirror%20%E2%80%94%20self-hosted%20playlist%20sync%20across%20seven%20music%20services&url=https%3A%2F%2Fgithub.com%2Fahnafnafee%2Fsongmirror
-[share-linkedin-shield]: https://img.shields.io/badge/-share%20on%20linkedin-black?labelColor=black&logo=linkedin&logoColor=white&style=flat-square
-[share-linkedin-link]: https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2Fahnafnafee%2Fsongmirror
+[docker-link]: https://github.com/elias001011/sync-my-music/blob/main/docker-compose.yml
+[stars-shield]: https://img.shields.io/github/stars/elias001011/sync-my-music?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
+[stars-link]: https://github.com/elias001011/sync-my-music/stargazers
+[forks-shield]: https://img.shields.io/github/forks/elias001011/sync-my-music?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
+[forks-link]: https://github.com/elias001011/sync-my-music/network/members
+[issues-shield]: https://img.shields.io/github/issues/elias001011/sync-my-music?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
+[issues-link]: https://github.com/elias001011/sync-my-music/issues
+[last-commit-shield]: https://img.shields.io/github/last-commit/elias001011/sync-my-music?color=F2601A&labelColor=black&logo=github&logoColor=white&style=flat-square
+[last-commit-link]: https://github.com/elias001011/sync-my-music/commits/main
+[github-issues-link]: https://github.com/elias001011/sync-my-music/issues
