@@ -1,4 +1,4 @@
-// Mocked visual/behavioral verification pass for the SongMirror SPA.
+// Mocked visual/behavioral verification pass for the Sync My Music SPA.
 // Serves the production build (vite preview) and drives it with Playwright,
 // intercepting every /api and /events call so the backend is never needed.
 //
@@ -873,7 +873,7 @@ async function main() {
 
       // The sidebar wordmark is a link home from anywhere in the app.
       await page.goto(BASE_URL + '/settings', { waitUntil: 'networkidle' })
-      await page.getByRole('link', { name: 'SongMirror', exact: true }).click()
+      await page.getByRole('link', { name: 'Sync My Music', exact: true }).click()
       await page.waitForURL(BASE_URL + '/')
       const home = new URL(page.url()).pathname === '/'
       console.log(`${home ? 'ok        ' : 'FAIL      '} clicking the sidebar logo/wordmark navigates to the dashboard (path "${new URL(page.url()).pathname}")`)
