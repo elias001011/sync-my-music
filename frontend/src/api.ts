@@ -120,6 +120,7 @@ export const api = {
   requestSonoraPair: (ip: string, port: number) => request<{ status: string }>('/api/sonora/pair-request', json({ ip, port })),
   verifySonoraPair: (ip: string, port: number, pin: string) => request<{ status: string }>('/api/sonora/pair-verify', json({ ip, port, pin })),
   syncSonora: (deviceId: string, surfaces: string[]) => request<{ local: Record<string, number>; remote: Record<string, number> }>(`/api/sonora/devices/${encodeURIComponent(deviceId)}/sync`, json({ surfaces })),
+  removeSonoraDevice: (deviceId: string) => request<OkResponse>(`/api/sonora/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
   restoreSonoraBackup: (file: File) => {
     const form = new FormData()
     form.append('backup', file)

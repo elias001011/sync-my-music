@@ -239,6 +239,24 @@ def test_sonora_backup_v2_import_export(tmp_path):
     assert exported["playlistEntries"]["1"][0]["videoId"] == "abcdefghijk"
 
 
+def test_sonora_remove_device_forgets_stale_pairing(tmp_path):
+    """A restored/reinstalled Sonora app gets a fresh device id — the old
+    pairing row would fail every sync forever. The DELETE endpoint must forget
+    the record (canonical library untouched)."""
+    from fastapi.testclient import TestClient
+    from songmirror.services.settings import SettingsStore
+    from songmirror.web import create_app
+
+    db = MusicDatabase(tmp_path / "music.db")
+    with TestClient(create_app(settings=SettingsStore(dir=tmp_path), music_db=db)) as client:
+        sonora = client.app.state.sonora
+        sonora.save_device("dev-stale", "Sonora (Android)", "192.168.2.31", 46473, paired=True)
+        assert sonora.paired("dev-stale")
+        assert client.delete("/api/sonora/devices/dev-stale").json()["ok"] is True
+        assert not sonora.paired("dev-stale")
+        assert client.delete("/api/sonora/devices/dev-stale").status_code == 404
+
+
 def test_sonora_export_aggregates_the_whole_canonical_library(tmp_path):
     """The push to a Sonora device carries the HUB's library — playlists and
     tracks imported under OTHER accounts (Musify hive, live YT import) — not

@@ -371,6 +371,15 @@ class SonoraLanService:
             row = conn.execute("SELECT paired FROM sonora_devices WHERE device_id=?", (device_id,)).fetchone()
         return bool(row and row[0])
 
+    def remove_device(self, device_id: str) -> bool:
+        """Drop one device's pairing record. A restored/reinstalled Sonora app
+        gets a fresh device id and port, leaving the old row paired forever —
+        every sync then fails against a dead address. Removing the record only
+        forgets the LAN pairing; the canonical library is untouched."""
+        with self.adapter.db.connect() as conn:
+            cursor = conn.execute("DELETE FROM sonora_devices WHERE device_id=?", (device_id,))
+            return cursor.rowcount > 0
+
     def request_pair(self, ip: str, port: int) -> dict[str, Any]:
         response = requests.post(f"http://{ip}:{port}/api/sync/pair-request", json={
             "clientId": self.device_id, "clientName": self.name, "clientPort": self.port,

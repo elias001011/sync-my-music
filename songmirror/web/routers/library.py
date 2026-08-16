@@ -471,6 +471,16 @@ def set_sonora_status(request: Request, body: dict = Body(...)):
     return sonora_status(request)
 
 
+@router.delete("/api/sonora/devices/{device_id}")
+def sonora_remove_device(device_id: str, request: Request):
+    """Forget one Sonora device's LAN pairing (e.g. the app was restored and
+    got a new device id/port, so the old row would fail every sync). Only the
+    pairing record is removed — canonical library data is untouched."""
+    if not request.app.state.sonora.remove_device(device_id):
+        raise HTTPException(status_code=404, detail="device not found")
+    return {"ok": True}
+
+
 @router.post("/api/sonora/discover")
 def sonora_discover(request: Request):
     devices = request.app.state.sonora.discover()
