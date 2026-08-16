@@ -265,6 +265,38 @@ data/           # dados de runtime; ignorados pelo Git
 docs/           # arquitetura e semântica de sincronização
 ```
 
+## 🧬 Além do SongMirror — o que este projeto muda
+
+O Sync My Music não é um fork que apenas troca a cara do SongMirror: ele reusa o
+núcleo maduro de sincronização de playlists e adiciona uma camada de produto
+inteira em volta. O repositório público é o código real por trás do painel LAN,
+da biblioteca canônica, dos recaps e dos backups — não uma branch de prévia.
+
+**Herdado do SongMirror (mantido próximo do upstream):**
+
+- Conectores de serviço (`engine/targets/`) para Spotify, TIDAL, Qobuz, Deezer,
+  Amazon Music, Apple Music, YouTube Music e Jellyfin.
+- Matching de faixas (`engine/matching.py`), caches de resolução, reconciliação
+  de playlists e o motor de transferências com suas proteções.
+- Espelho de downloads (`spotDL`) e push de capas para o Jellyfin.
+
+**Reconstruído ou adicionado pelo Sync My Music:**
+
+| Área | O que mudou |
+| --- | --- |
+| Banco canônico | `data/sync_music.db`: artistas/álbuns/faixas canônicos, identidades por serviço, playlists com itens ordenados, ownership por conta, versões de playlists, eventos de escuta e snapshots de recap. |
+| Aplicação web | SPA React + Vite e backend FastAPI com feed ao vivo SSE — wizard de contas, jobs de sync, transferências com revisão de conflitos, playlists, biblioteca, recaps, logs, configurações e backups. |
+| Contas | Conectores reescritos como account-scoped: perfis nomeados por serviço com credenciais, arquivos de token/cookie (0600) e caches isolados; superfícies e pausa por conta, remoção com confirmação. |
+| Jobs de sync | Vários jobs nomeados e agendados independentemente (estilo Soundiiz) selecionando **contas** (`account_id`), não apenas provedores. |
+| Biblioteca e recaps | UI de biblioteca canônica, recaps mensais/anuais filtráveis por conta, endpoint de scrobble compatível com ListenBrainz, importação do export oficial do Spotify, imports Musify/Sonora. |
+| Histórico e recuperação | Versões de playlists com restauração, backups versionados e validados do app inteiro, backups por conta sem credenciais. |
+| Segurança multi-conta | Classificação ao vivo × snapshot por `auth_mode`, namespaces de archive/cache por conta (N-way nunca colide), sem troca insegura de `os.environ` entre contas concorrentes. |
+| Bridge local | Importação/exportação backup-v2 do Sonora e sync LAN pareado por PIN; custom links de playlists do Musify. |
+
+O CLI do engine (`python -m songmirror`) continua rodando standalone; a aplicação
+web dirige o mesmo engine por uma camada de serviços serializada (`services/`)
+para que syncs agendados e transferências nunca se sobreponham.
+
 ## 🤝 Créditos
 
 - [SongMirror](https://github.com/ahnafnafee/songmirror), criado por

@@ -1,5 +1,15 @@
 # Sync My Music architecture
 
+> **Relationship to SongMirror.** This codebase is an MIT adaptation of
+> [SongMirror](https://github.com/ahnafnafee/songmirror): the engine layer
+> (`engine/targets`, `engine/matching`, reconciliation, transfers, safety
+> rails) is inherited and kept close to upstream, while the web application,
+> canonical database, accounts registry, jobs, recaps, backups and bridges are
+> Sync My Music additions. The engine is driven by a serialized service layer
+> (`services/`) so scheduled syncs and transfers never overlap; the CLI entry
+> point still runs the engine standalone. See `README.md` → "Beyond SongMirror"
+> for the full inherited-vs-added breakdown.
+
 ## One database, several mirrors
 
 `data/sync_music.db` is the product database. It is separate from the original

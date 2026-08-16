@@ -616,6 +616,44 @@ docs/           # architecture and synchronization semantics
 
 </div>
 
+## 🧬 Beyond SongMirror — what this project changes
+
+Sync My Music is not a fork that merely re-skins SongMirror: it reuses the
+mature playlist-sync core and adds an entire product layer around it. The
+public repository is the actual codebase behind the LAN dashboard, the
+canonical library, recaps and backups — not a preview branch.
+
+**Inherited from SongMirror (kept close to upstream):**
+
+- Service connectors (`engine/targets/`) for Spotify, TIDAL, Qobuz, Deezer,
+  Amazon Music, Apple Music, YouTube Music and Jellyfin.
+- Track matching (`engine/matching.py`), resolution caches, playlist
+  reconciliation and the transfer engine with its safety rails.
+- The download mirror (`spotDL`) and Jellyfin cover push.
+
+**Rebuilt or added by Sync My Music:**
+
+| Area | What changed |
+| --- | --- |
+| Canonical database | `data/sync_music.db`: canonical artists/albums/tracks, provider identities, playlists with ordered items, per-account ownership, playlist versions, listening events and recap snapshots. |
+| Web application | React + Vite SPA and FastAPI backend with SSE live feed — accounts wizard, sync jobs, transfers with conflict review, playlists, library, recaps, logs, settings and backups. |
+| Accounts | Connectors were rewritten as account-scoped: named live profiles per service with isolated credentials, token/cookie files (0600) and caches; per-account surfaces, pause switches and confirmed removal. |
+| Sync jobs | Multiple named, independently scheduled syncs (Soundiiz-style) selecting **accounts** (`account_id`), not just providers. |
+| Library & recaps | Canonical library UI, unified monthly/annual recaps filterable by account, ListenBrainz-compatible scrobble endpoint, Spotify official export import, Musify/Sonora imports. |
+| History & recovery | Playlist version snapshots with restore, portable validated whole-app backups, per-account credential-free backups. |
+| Multi-account safety | Live-vs-snapshot classification by auth mode, per-account archive/cache namespaces (N-way never collides), no `os.environ` swapping between concurrent accounts. |
+| Local bridge | Sonora backup-v2 import/export and PIN-paired LAN sync; Musify custom playlist links. |
+
+The engine's CLI (`python -m songmirror`) still runs standalone; the web
+application drives the same engine through a serialized service layer
+(`services/`) so scheduled syncs and transfers never overlap.
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
 ## 🤝 Credits
 
 Sync My Music exists because several open-source projects made different parts
