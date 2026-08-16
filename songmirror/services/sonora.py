@@ -245,8 +245,14 @@ class SonoraAdapter:
 
     def _export_surface(self, conn, surface: str) -> list[dict[str, Any]]:
         """Every account's rows for one surface, deduped by the entity's stable
-        id (ytid/videoId/playlistId) so the same liked track or playlist imported
-        from two sources appears once."""
+        id (ytid/videoId/playlistId) and translated to Sonora backup-v2 schema.
+
+        The canonical store keeps each importer's native metadata (Musify
+        `ytid`/`title`/`image`, Spotify export rows, ...). The Sonora merge
+        casts strictly (`artistId as String`, `playlistId as String`,
+        `DateTime.parse(addedAt)`), so a raw passthrough made the app reply
+        500 and the device stayed empty. Rows that cannot be represented
+        (no stable id) are skipped instead of crashing the merge."""
         rows = conn.execute(
             "SELECT metadata FROM surface_items WHERE surface=? ORDER BY added_at", (surface,)).fetchall()
         seen: set[str] = set()
@@ -261,8 +267,72 @@ class SonoraAdapter:
             if key in seen:
                 continue
             seen.add(key)
-            out.append(meta)
+            item = self._surface_to_backup_v2(surface, meta)
+            if item is not None:
+                out.append(item)
         return out
+
+    @staticmethod
+    def _surface_to_backup_v2(surface: str, meta: dict[str, Any]) -> dict[str, Any] | None:
+        """Translate one canonical surface row into Sonora backup-v2 shape.
+
+        The app's merge requires at least a stable id, a display name and a
+        parseable `addedAt` for each surface row; missing ids make a row
+        unrepresentable and are dropped (returns None)."""
+        added_at = datetime.fromtimestamp(SonoraAdapter._parse_time(meta.get("addedAt")), timezone.utc).isoformat()
+        if surface == "liked_songs":
+            video_id = str(meta.get("videoId") or meta.get("ytid") or "")
+            if not video_id:
+                return None
+            return {
+                "videoId": video_id,
+                "title": str(meta.get("title") or meta.get("track_name") or "Unknown song"),
+                "artist": str(meta.get("artist") or meta.get("artist_name") or "Unknown artist"),
+                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image"),
+                "artistId": meta.get("artistId"),
+                "albumId": meta.get("albumId"),
+                "addedAt": added_at,
+                "duration": meta.get("duration"),
+                "isVideo": bool(meta.get("isVideo")),
+                "isExplicit": bool(meta.get("isExplicit")),
+            }
+        if surface == "followed_artists":
+            artist_id = str(meta.get("artistId") or meta.get("ytid") or "")
+            if not artist_id:
+                return None
+            return {
+                "artistId": artist_id,
+                "name": str(meta.get("name") or meta.get("title") or "Unknown artist"),
+                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image"),
+                "addedAt": added_at,
+            }
+        if surface == "liked_albums":
+            album_id = str(meta.get("albumId") or meta.get("ytid") or "")
+            if not album_id:
+                return None
+            return {
+                "albumId": album_id,
+                "name": str(meta.get("name") or meta.get("title") or "Unknown album"),
+                "artistName": str(meta.get("artistName") or meta.get("artist") or meta.get("artist_name")
+                                or "Unknown artist"),
+                "artistId": meta.get("artistId"),
+                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image"),
+                "year": meta.get("year"),
+                "addedAt": added_at,
+            }
+        if surface == "liked_playlists":
+            playlist_id = str(meta.get("playlistId") or meta.get("ytid") or "")
+            if not playlist_id:
+                return None
+            items = meta.get("list")
+            return {
+                "playlistId": playlist_id,
+                "name": str(meta.get("name") or meta.get("title") or "Unknown playlist"),
+                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image"),
+                "videoCount": meta.get("videoCount") or (len(items) if isinstance(items, list) else None),
+                "addedAt": added_at,
+            }
+        return None
 
     @staticmethod
     def _parse_time(value: Any) -> int:

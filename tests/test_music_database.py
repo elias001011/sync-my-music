@@ -274,3 +274,55 @@ def test_sonora_export_aggregates_the_whole_canonical_library(tmp_path):
     exported = adapter.export_backup()
     assert [p["name"] for p in exported["playlists"]] == ["Road"]
     assert exported["playlistEntries"]["1"][0]["videoId"] == "vid1234567890a"
+
+
+def test_sonora_export_translates_surfaces_to_backup_v2_schema(tmp_path):
+    """The Sonora app's merge casts strictly (`artistId as String`,
+    `playlistId as String`, `DateTime.parse(addedAt)`). The canonical store
+    keeps each importer's NATIVE metadata (Musify: `ytid`/`title`/`image`;
+    Spotify export rows), so the export must translate to backup-v2 keys or
+    the device replies 500 and the merge dies. Rows without a stable id are
+    skipped, never sent as garbage."""
+    import json as _json
+
+    db = MusicDatabase(tmp_path / "music.db")
+    db.sync_account("musify", "Musify", "connected", "hive-backup", account_id="musify:default")
+    now = int(datetime.now(timezone.utc).timestamp())
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO surface_items (id, account_id, surface, entity_type, entity_id, provider_id, added_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("surf-a", "musify:default", "followed_artists", "artist", "art-1", "UCyT1234", now,
+             _json.dumps({"ytid": "UCyT1234", "title": "Tokyo Tea Room", "image": "http://img/1"})),
+        )
+        conn.execute(
+            "INSERT INTO surface_items (id, account_id, surface, entity_type, entity_id, provider_id, added_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("surf-b", "musify:default", "liked_playlists", "playlist", "pl-1", "PLxYz", now,
+             _json.dumps({"ytid": "PLxYz", "title": "Classic Rock Hits",
+                          "image": "http://img/2", "list": [{"id": 0, "ytid": "v1"}]})),
+        )
+        # A row with no stable id at all must be skipped, not crash the merge.
+        conn.execute(
+            "INSERT INTO surface_items (id, account_id, surface, entity_type, entity_id, provider_id, added_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("surf-c", "musify:default", "liked_albums", "album", "alb-1", "", now,
+             _json.dumps({"title": "No id album"})),
+        )
+    adapter = SonoraAdapter(db)
+    exported = adapter.export_backup()
+    artists = exported["followedArtists"]
+    playlists = exported["likedPlaylists"]
+    assert len(artists) == 1
+    assert artists[0]["artistId"] == "UCyT1234"
+    assert artists[0]["name"] == "Tokyo Tea Room"
+    assert artists[0]["thumbnailUrl"] == "http://img/1"
+    assert artists[0]["addedAt"].endswith("+00:00")
+    assert len(playlists) == 1
+    assert playlists[0]["playlistId"] == "PLxYz"
+    assert playlists[0]["name"] == "Classic Rock Hits"
+    assert playlists[0]["videoCount"] == 1
+    # Id-less row skipped; liked songs/albums empty rather than malformed.
+    assert exported["likedAlbums"] == []
+    assert exported["likedSongs"] == []
+    assert exported["likedPlaylists"] == playlists
