@@ -64,6 +64,26 @@ na interface e nos conectores.
 - ~~Renovar o token temporário, detectar cookie expirado e mostrar o erro real.~~
 - ~~Expor os estados `OAuth oficial`, `Web/cookie` e `Desativado`.~~
 
+Limitação conhecida (uso real):
+
+- No modo cookie, o browse/import não traz **imagens de capa** das playlists —
+  o endpoint do web player não expõe a arte (aparece vazio no painel; o import
+  funciona normalmente). Caminho futuro: buscar a capa por nome via pesquisa,
+  ou usar o client OAuth oficial apenas para a arte quando disponível.
+
+### 3. Importação/sincronização automática entre serviços
+
+- Hoje só **playlists** sincronizam sozinhas (jobs nomeados por conta,
+  one-way/N-way) e o import ao vivo por conta traz playlists para o banco
+  canônico. Não existe ainda um "importar tudo" de um serviço para outro.
+- Importar **a biblioteca inteira** (playlists + curtidas + álbuns + artistas)
+  de uma conta conectada para outra, com mapeamento conta-a-conta, dry-run e
+  limites de segurança — depende dos adapters de superfície (bloco 1).
+- Sincronização contínua agendada das superfícies (não só playlists) quando
+  ambos os lados declararem `rw`; superfícies `r` ficam como importação única.
+- Capacidade por conta/superfície continuam sendo o gate: nada é importado de
+  uma superfície desligada, e nada é apagado no destino sem confirmação.
+
 Segurança:
 
 - `sp_dc` permanece em arquivo `0600` por conta, nunca em logs.
@@ -71,7 +91,7 @@ Segurança:
 - Depois de existir backup criptografado autenticado, a inclusão do cookie será
   uma opção explícita, nunca o padrão silencioso.
 
-### 2. Spotify Web sem Premium + exportação oficial
+### 4. Spotify Web sem Premium + exportação oficial
 
 Fluxo cotidiano:
 
@@ -96,7 +116,7 @@ Segurança:
 - Depois de existir backup criptografado autenticado, a inclusão do cookie será
   uma opção explícita, nunca o padrão silencioso.
 
-### 3. Banco canônico e superfícies comerciais
+### 5. Banco canônico e superfícies comerciais
 
 - Persistir no banco canônico cada leitura completa feita pelos conectores.
 - Implementar capacidades por conta e por superfície.
