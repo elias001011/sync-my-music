@@ -439,7 +439,8 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
               drain_removals=False, should_continue=None, link_key=None):
     """Reconcile one logical playlist across N provider peers, bidirectionally.
 
-    playlists: {source: playlist dict}; caches: {source: resolution cache}.
+    playlists: {state_key: playlist dict} (legacy {source: ...} keys are still
+    honored so old callers/tests keep working); caches: {state_key: cache}.
     `link_key`, when given (explicit pairing), addresses the canonical snapshot
     state so differently-named paired playlists share one logical identity;
     otherwise the casefolded display name is used (implicit same-name pairing).
@@ -457,7 +458,9 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
     present = {}       # state_key -> set of ALL current target ids (not canonical-deduped)
     key2isrc = {}      # track_key -> ISRC, seeded by any ISRC-bearing provider (peers are ISRC-rich first)
     for p in peers:
-        raw = p.playlist_tracks(playlists[p.source])
+        # state_key first (two accounts of one provider can't collide); fall
+        # back to the legacy {source: ...} shape used by older callers/tests.
+        raw = p.playlist_tracks(playlists.get(p.state_key) or playlists[p.source])
         archive.upsert_many(songs, p.state_key, raw)
         archive.record_order(songs, key, p.state_key,
                              [[p.track_id(t), t.get("name", ""),
@@ -602,9 +605,9 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
 
         if execute:
             if additions:
-                p.add(playlists[p.source], [tid for tid, _, _ in additions])
+                p.add(playlists.get(p.state_key) or playlists[p.source], [tid for tid, _, _ in additions])
             for norm in safe:
-                p.remove(playlists[p.source], norm["_raw"])
+                p.remove(playlists.get(p.state_key) or playlists[p.source], norm["_raw"])
 
         # This provider's membership after the pass = what it has now, minus what
         # we removed. Added tracks re-materialize (under their own canonical) on

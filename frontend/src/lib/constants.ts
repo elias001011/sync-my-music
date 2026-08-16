@@ -59,30 +59,38 @@ const DEFAULT_SERVICE_STYLE: ServiceStyle = {
   text: 'text-neutral',
 }
 
+/** The bare provider of an id — `spotify:work` -> `spotify` — so styling and
+ * logos resolve for named multi-account profiles the same as the default. */
+function providerOf(idOrTag: string): string {
+  return idOrTag.split(':')[0]
+}
+
 export function tagLabel(tag: string): string {
-  return SERVICE_STYLES[tag]?.label || tag
+  return SERVICE_STYLES[providerOf(tag)]?.label || tag
 }
 export function tagDot(tag: string): string {
-  return (SERVICE_STYLES[tag] ?? DEFAULT_SERVICE_STYLE).dot
+  return (SERVICE_STYLES[providerOf(tag)] ?? DEFAULT_SERVICE_STYLE).dot
 }
 export function tagSoft(tag: string): string {
-  return (SERVICE_STYLES[tag] ?? DEFAULT_SERVICE_STYLE).soft
+  return (SERVICE_STYLES[providerOf(tag)] ?? DEFAULT_SERVICE_STYLE).soft
 }
 export function tagText(tag: string): string {
-  return (SERVICE_STYLES[tag] ?? DEFAULT_SERVICE_STYLE).text
+  return (SERVICE_STYLES[providerOf(tag)] ?? DEFAULT_SERVICE_STYLE).text
 }
 
 /** Provider id -> ServiceLogo id (both the "yt" event tag and the "ytmusic"
- * account id resolve to the same YouTube Music mark). */
+ * account id resolve to the same YouTube Music mark). Named account ids
+ * (`spotify:work`) resolve through their bare provider. */
 export function serviceLogoId(idOrTag: string): 'spotify' | 'tidal' | 'qobuz' | 'deezer' | 'amazon' | 'apple' | 'ytmusic' | 'jellyfin' | null {
-  if (idOrTag === 'spotify') return 'spotify'
-  if (idOrTag === 'tidal') return 'tidal'
-  if (idOrTag === 'qobuz') return 'qobuz'
-  if (idOrTag === 'deezer') return 'deezer'
-  if (idOrTag === 'amazon') return 'amazon'
-  if (idOrTag === 'apple') return 'apple'
-  if (idOrTag === 'yt' || idOrTag === 'ytmusic') return 'ytmusic'
-  if (idOrTag === 'jellyfin') return 'jellyfin'
+  const provider = providerOf(idOrTag)
+  if (provider === 'spotify') return 'spotify'
+  if (provider === 'tidal') return 'tidal'
+  if (provider === 'qobuz') return 'qobuz'
+  if (provider === 'deezer') return 'deezer'
+  if (provider === 'amazon') return 'amazon'
+  if (provider === 'apple') return 'apple'
+  if (provider === 'yt' || provider === 'ytmusic') return 'ytmusic'
+  if (provider === 'jellyfin') return 'jellyfin'
   return null
 }
 

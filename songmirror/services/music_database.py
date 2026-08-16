@@ -548,15 +548,19 @@ class MusicDatabase:
                                 playlists: Iterable[dict[str, Any]] = (),
                                 liked_tracks: Iterable[dict[str, Any]] = (),
                                 albums: Iterable[dict[str, Any]] = (),
-                                artists: Iterable[dict[str, Any]] = ()) -> dict[str, int]:
+                                artists: Iterable[dict[str, Any]] = (),
+                                auth_mode: str = "official-export") -> dict[str, int]:
         """Replace one account's exported library surfaces without touching peers.
 
         This is the shared restore contract used by provider exports.  The
         account id is explicit, so importing a second account of the same
         provider cannot overwrite the first one's playlists or likes.
+        `auth_mode` marks how the data was sourced: `official-export` for
+        provider exports (read-only snapshot), `live-import` for a pull straight
+        from a live connected account (stays a live profile, not a snapshot).
         """
         playlists, liked_tracks, albums, artists = map(list, (playlists, liked_tracks, albums, artists))
-        self.sync_account(provider, label, "connected", "official-export", account_id=account_id)
+        self.sync_account(provider, label, "connected", auth_mode, account_id=account_id)
         now = _now()
         counts = {"playlists": 0, "playlist_tracks": 0, "liked_tracks": 0,
                   "albums": 0, "artists": 0}

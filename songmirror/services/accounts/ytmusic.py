@@ -22,6 +22,11 @@ class YTMusicConnector(Connector):
     ]
 
     def _auth_file(self):
+        if self._account_id:
+            # Named accounts get their own OAuth token file (materialized in the
+            # account snapshot), so authorizing a second YT Music account can
+            # never overwrite the first one's token.
+            return self._config().get("YTMUSIC_AUTH_FILE") or "data/ytmusic_oauth.json"
         # os.getenv first so Docker's YTMUSIC_AUTH_FILE=/data/... (the persistent
         # volume) wins over a relative default that would land in an ephemeral dir.
         return os.getenv("YTMUSIC_AUTH_FILE") or self._store.get("YTMUSIC_AUTH_FILE") or "data/ytmusic_oauth.json"
@@ -30,16 +35,18 @@ class YTMusicConnector(Connector):
         from ytmusicapi.auth.oauth import OAuthCredentials
 
         return OAuthCredentials(
-            client_id=self._store.get("YTMUSIC_OAUTH_CLIENT_ID"),
-            client_secret=self._store.get("YTMUSIC_OAUTH_CLIENT_SECRET"),
+            client_id=self._get("YTMUSIC_OAUTH_CLIENT_ID"),
+            client_secret=self._get("YTMUSIC_OAUTH_CLIENT_SECRET"),
         )
 
     def _browser_path(self):
+        if self._account_id:
+            return self._config().get("YTMUSIC_BROWSER_AUTH") or "data/ytmusic_browser.json"
         return (os.getenv("YTMUSIC_BROWSER_AUTH") or self._store.get("YTMUSIC_BROWSER_AUTH")
                 or "data/ytmusic_browser.json")
 
     def _browser_active(self):
-        pref = str(self._store.get("YTMUSIC_PREFER_BROWSER") or os.getenv("YTMUSIC_PREFER_BROWSER") or "")
+        pref = str(self._get("YTMUSIC_PREFER_BROWSER") or "")
         return pref.lower() in ("1", "on", "true", "yes") and os.path.exists(self._browser_path())
 
     def _browser_alive(self):
@@ -84,13 +91,13 @@ class YTMusicConnector(Connector):
             YTMusic(path).get_library_playlists(limit=1)  # cookies valid?
         except Exception as e:
             return ConnStatus("error", f"YouTube Music rejected the cookies ({e!r})")
-        self._store.save({"YTMUSIC_BROWSER_AUTH": path, "YTMUSIC_PREFER_BROWSER": "1"})
+        self._save({"YTMUSIC_BROWSER_AUTH": path, "YTMUSIC_PREFER_BROWSER": "1"})
         return ConnStatus("connected", "no-quota (browser cookies) mode")
 
     def disable_browser(self) -> ConnStatus:
         """Revert to the durable OAuth Data API; the cookie file is left in place
         so re-enabling doesn't need another paste."""
-        self._store.save({"YTMUSIC_PREFER_BROWSER": "0"})
+        self._save({"YTMUSIC_PREFER_BROWSER": "0"})
         return self.status()
 
     def begin_device(self) -> DeviceCode:

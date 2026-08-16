@@ -403,9 +403,10 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
     from . import spotify_cookie
 
     spotify_cookie.take_singles_used()   # drop any residue from a pass that died mid-read
-    dirs = {p.source: p.list_playlists() for p in peers}
-    # Keyed by state_key (not provider) so two accounts of the same provider
-    # keep separate resolution caches.
+    # Keyed by state_key (NOT p.source): two accounts of the same provider must
+    # keep separate playlist dirs, resolution caches and canonical baselines —
+    # for default accounts state_key == source, so legacy behavior is identical.
+    dirs = {p.state_key: p.list_playlists() for p in peers}
     caches = {p.state_key: load_cache(p.cache_file) for p in peers}
     total = {"added": 0, "removed": 0, "missing": 0, "held": 0, "deferred": 0,
              "removals_skipped": 0, "failed": 0}
@@ -437,9 +438,9 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
                 if not p.is_editable(pl):
                     log_warn(f"{name}: {p.name} playlist not editable - skipped", tag=p.tag)
                     continue
-                playlists[p.source] = pl
+                playlists[p.state_key] = pl
 
-            active = [p for p in peers if p.source in playlists]
+            active = [p for p in peers if p.state_key in playlists]
             if len(active) < 2:
                 log_note(f"{name}: fewer than 2 providers have this playlist - skipped", tag="sync")
                 continue

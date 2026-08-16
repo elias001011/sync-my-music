@@ -128,6 +128,14 @@ export const api = {
 
   // Accounts
   getAccounts: () => request<Account[]>('/api/accounts'),
+  /** Create a new named live profile for a provider (`{provider}:{slug}`) with
+   * its own isolated credentials — connect it separately. */
+  createAccount: (provider: string, label: string) =>
+    request<{ ok: true; account_id: string; provider: string; name: string }>(`/api/accounts/${provider}/accounts`, json({ label })),
+  /** Permanently remove a named live profile (registry entry, its token/cookie
+   * files and canonical rows). Requires the backend-side `confirm` flag. */
+  removeAccount: (id: string) =>
+    request<{ ok: true; account_id: string; removed: true }>(`/api/accounts/${encodeURIComponent(id)}/remove?confirm=1`, { method: 'DELETE' }),
   saveAccountConfig: (id: string, values: Record<string, string>) =>
     request<OkResponse>(`/api/accounts/${id}/config`, json(values)),
   connectAccount: (id: string, values?: Record<string, string>) =>
@@ -137,24 +145,33 @@ export const api = {
   disconnectAccount: (id: string) => request<OkResponse>(`/api/accounts/${id}`, { method: 'DELETE' }),
   setAccountEnabled: (id: string, enabled: boolean) =>
     request<OkResponse>(`/api/accounts/${id}/enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
-  /** Per-account switches: pause the whole profile or individual surfaces. */
-  setAccountPrefs: (id: string, prefs: { enabled?: boolean; surfaces?: Partial<Record<import('./types').SurfaceName, boolean>> }) =>
+  /** Per-account switches: rename the profile, pause the whole account or
+   * individual surfaces. */
+  setAccountPrefs: (id: string, prefs: { label?: string; enabled?: boolean; surfaces?: Partial<Record<import('./types').SurfaceName, boolean>> }) =>
     request<{ ok: true; account_id: string; enabled: boolean; surfaces: Record<string, boolean> }>(`/api/accounts/${id}/prefs`, { method: 'PUT', body: JSON.stringify(prefs) }),
   /** YouTube Music-only "no-quota" mode: routes reads/writes through a pasted
    * browser session instead of the (daily-capped) Data API. `headers` is the
-   * raw "copy request headers" block from a music.youtube.com XHR. */
-  enableYtmusicBrowserMode: (headers: string) => request<PollResponse>('/api/accounts/ytmusic/browser', json({ headers })),
-  disableYtmusicBrowserMode: () => request<PollResponse>('/api/accounts/ytmusic/browser', { method: 'DELETE' }),
+   * raw "copy request headers" block from a music.youtube.com XHR. `accountId`
+   * targets a specific profile (default: ytmusic:default). */
+  enableYtmusicBrowserMode: (headers: string, accountId?: string) => request<PollResponse>('/api/accounts/ytmusic/browser', json({ headers, ...(accountId ? { account_id: accountId } : {}) })),
+  disableYtmusicBrowserMode: (accountId?: string) => request<PollResponse>(`/api/accounts/ytmusic/browser?account_id=${encodeURIComponent(accountId ?? 'ytmusic')}`, { method: 'DELETE' }),
   /** Spotify Web/cookie mode: first-party session for listing, search and writes,
-   * with no OAuth developer app dependency. */
-  enableSpotifyCookieMode: (spDc: string) => request<PollResponse>('/api/accounts/spotify/cookie', json({ sp_dc: spDc })),
-  disableSpotifyCookieMode: () => request<PollResponse>('/api/accounts/spotify/cookie', { method: 'DELETE' }),
+   * with no OAuth developer app dependency. `accountId` targets a specific
+   * profile, which gets its own 0600 cookie file (default: spotify:default). */
+  enableSpotifyCookieMode: (spDc: string, accountId?: string) => request<PollResponse>('/api/accounts/spotify/cookie', json({ sp_dc: spDc, ...(accountId ? { account_id: accountId } : {}) })),
+  disableSpotifyCookieMode: (accountId?: string) => request<PollResponse>(`/api/accounts/spotify/cookie?account_id=${encodeURIComponent(accountId ?? 'spotify')}`, { method: 'DELETE' }),
 
   /** A second Spotify app (Extended Quota Mode) used only for ISRC /tracks lookups —
    * a rate bucket separate from the OAuth user token, needed for reliable N-way matching. */
   setSpotifyIsrcApp: (clientId: string, clientSecret: string) =>
     request<PollResponse>('/api/accounts/spotify/isrc-app', json({ client_id: clientId, client_secret: clientSecret })),
   clearSpotifyIsrcApp: () => request<PollResponse>('/api/accounts/spotify/isrc-app', { method: 'DELETE' }),
+
+  // Canonical library pulls
+  /** Pull a live account's playlists + tracks into the canonical library under
+   * that account_id (replaces the account's previous canonical snapshot). */
+  importLiveAccount: (accountId: string) =>
+    request<{ account_id: string; provider: string; playlists: number; playlist_tracks: number }>(`/api/library/accounts/${encodeURIComponent(accountId)}/import`, { method: 'POST' }),
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),

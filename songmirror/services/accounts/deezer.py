@@ -36,21 +36,25 @@ class DeezerConnector(Connector):
     ]
 
     def _raw(self):
-        return self._store.get("DEEZER_WEB_HEADERS") or os.getenv("DEEZER_WEB_HEADERS") or ""
+        return self._get("DEEZER_WEB_HEADERS") or ""
 
     def _refresh_raw(self):
-        return self._store.get("DEEZER_REFRESH_TOKEN") or os.getenv("DEEZER_REFRESH_TOKEN") or ""
+        return self._get("DEEZER_REFRESH_TOKEN") or ""
 
     def _web_token_file(self):
+        if self._account_id:
+            return self._config().get("DEEZER_WEB_SESSION_FILE") or token_path("DEEZER_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE)
         configured = self._store.get("DEEZER_WEB_SESSION_FILE") or os.getenv("DEEZER_WEB_SESSION_FILE")
         return configured or token_path("DEEZER_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE)
 
     def _official_token_file(self):
+        if self._account_id:
+            return self._config().get("DEEZER_TOKEN_FILE") or DEFAULT_TOKEN_FILE
         return os.getenv("DEEZER_TOKEN_FILE") or self._store.get("DEEZER_TOKEN_FILE") or DEFAULT_TOKEN_FILE
 
     def _official_connected(self):
-        app_id = self._store.get("DEEZER_APP_ID") or os.getenv("DEEZER_APP_ID")
-        app_secret = self._store.get("DEEZER_APP_SECRET") or os.getenv("DEEZER_APP_SECRET")
+        app_id = self._get("DEEZER_APP_ID")
+        app_secret = self._get("DEEZER_APP_SECRET")
         return bool(app_id and app_secret and read_token(self._official_token_file()).get("access_token"))
 
     def _validate(self, raw=None, refresh_token=None, *, prefer_persisted=True):
@@ -77,12 +81,12 @@ class DeezerConnector(Connector):
             if ok and client is not None:
                 updates = {}
                 serialized = client.serialized_headers()
-                if serialized != self._store.get("DEEZER_WEB_HEADERS"):
+                if serialized != self._get("DEEZER_WEB_HEADERS"):
                     updates["DEEZER_WEB_HEADERS"] = serialized
-                if client.refresh_token and client.refresh_token != self._store.get("DEEZER_REFRESH_TOKEN"):
+                if client.refresh_token and client.refresh_token != self._get("DEEZER_REFRESH_TOKEN"):
                     updates["DEEZER_REFRESH_TOKEN"] = client.refresh_token
                 if updates:
-                    self._store.save(updates)
+                    self._save(updates)
             return ConnStatus("connected" if ok else "expired", detail)
         if self._official_connected():
             return ConnStatus("connected", "developer OAuth fallback")
@@ -110,7 +114,7 @@ class DeezerConnector(Connector):
         if client is not None:
             minimized = client.serialized_headers()
             refresh_token = client.refresh_token
-        self._store.save(
+        self._save(
             {
                 "DEEZER_WEB_HEADERS": minimized,
                 "DEEZER_REFRESH_TOKEN": refresh_token,
@@ -121,5 +125,5 @@ class DeezerConnector(Connector):
         return ConnStatus("connected", detail)
 
     def disconnect(self):
-        self._store.save({"DEEZER_WEB_HEADERS": "", "DEEZER_REFRESH_TOKEN": "", "DEEZER_ARL": ""})
+        self._save({"DEEZER_WEB_HEADERS": "", "DEEZER_REFRESH_TOKEN": "", "DEEZER_ARL": ""})
         write_token(self._web_token_file(), {})

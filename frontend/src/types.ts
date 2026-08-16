@@ -39,8 +39,12 @@ export interface Account {
   capabilities?: ProviderCapabilities
   /** Emergency connector switch. Disabled providers remain in the database but no reads/writes run. */
   enabled?: boolean
-  /** Stable account profile id for live connectors (`{provider}:default`). */
+  /** Stable account profile id for live connectors (`{provider}:default` or a
+   * named profile like `spotify:work`). */
   account_id?: string
+  /** True for a live connected profile (default or named); false/absent for a
+   * restored local snapshot. */
+  live?: boolean
   /** Real per-surface capabilities of this provider. */
   surface_capabilities?: Partial<Record<SurfaceName, SurfaceCapability>>
   /** Current per-surface switches for this account (absent = all on). */

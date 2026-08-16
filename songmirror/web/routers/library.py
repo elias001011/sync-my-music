@@ -108,6 +108,78 @@ def library_accounts(request: Request):
     return request.app.state.music_db.accounts()
 
 
+@router.post("/api/library/accounts/{account_id}/import")
+async def import_live_account(account_id: str, request: Request):
+    """Pull a live account's playlists + tracks into the canonical library.
+
+    Reads through the account's own engine target (its own credentials/cache)
+    and persists the result under the SAME account_id — a second account of the
+    same provider never mixes into the first one's rows. Re-imports replace the
+    account's previous canonical snapshot (versioned before replacement), so
+    nothing sums up twice. Only the `playlists` surface is read today; liked
+    tracks/albums/artists have no commercial adapters yet and stay out of the
+    canonical store unless imported via an official export. A paused account or
+    a disabled playlists surface refuses the read — no data is deleted."""
+    settings = request.app.state.settings
+    provider, _, rest = account_id.partition(":")
+    if not rest:
+        account_id = f"{provider}:default"  # bare `spotify` -> the migrated default profile
+    from ...services.canonical_target import is_canonical_account
+    if is_canonical_account(request.app.state.music_db, account_id):
+        raise HTTPException(status_code=400, detail="this is a read-only snapshot account — import into a live account instead")
+    if not settings.account_enabled(account_id):
+        raise HTTPException(status_code=400, detail="this account is paused — enable it before importing")
+    if not settings.account_surface(account_id, "playlists"):
+        raise HTTPException(status_code=400, detail="the playlists surface is disabled for this account")
+
+    from ...services.playlists import PlaylistService
+    service = PlaylistService(settings, request.app.state.music_db)
+    target, opts = service._target(account_id)
+    if target is None:
+        raise HTTPException(status_code=400, detail=f"{provider}: no live connection for this account")
+
+    def work():
+        playlists = target.browse_playlists()
+        payload = []
+        for pl in playlists:
+            try:
+                tracks = target.playlist_tracks(pl)
+            except Exception:
+                tracks = []  # one broken playlist must not fail the whole import
+            items = []
+            for t in tracks:
+                items.append({
+                    "provider_track_id": target.track_id(t) or "",
+                    "track_name": t.get("name") or "",
+                    "artist_name": t.get("artist") or ", ".join(t.get("artists") or []),
+                    "release_name": t.get("album") or "",
+                    "duration_ms": t.get("duration_ms"),
+                    "isrc": t.get("isrc"),
+                    "added_at": t.get("added_at"),
+                })
+            payload.append({
+                "provider_id": target.playlist_id(pl),
+                "name": target.playlist_name(pl),
+                "description": target.playlist_description(pl),
+                "snapshot": pl.get("snapshot_id") or "",
+                "tracks": items,
+            })
+        return payload
+
+    try:
+        payload = await request.app.state.sync.run_exclusive(work)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"could not read {provider}: {exc!r}") from exc
+    profile = settings.account(account_id) or {}
+    counts = request.app.state.music_db.import_provider_library(
+        provider, account_id, profile.get("label") or account_id,
+        playlists=payload, auth_mode="live-import")
+    request.app.state.bus.publish(Event(time.time(), "summary", provider,
+                                        f"live import: {account_id} · {counts['playlists']} playlists, "
+                                        f"{counts['playlist_tracks']} tracks", counts))
+    return {"account_id": account_id, "provider": provider, **counts}
+
+
 @router.put("/api/library/accounts/{account_id}")
 def rename_library_account(account_id: str, request: Request, body: dict = Body(...)):
     """Rename an account slot; its stable id keeps jobs/links/recaps attached."""

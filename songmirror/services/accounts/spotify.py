@@ -22,6 +22,10 @@ class SpotifyConnector(Connector):
     ]
 
     def _token_cache(self):
+        if self._account_id:
+            # The account's own snapshot materializes a per-account token file for
+            # named profiles, so two Spotify accounts never share/overwrite a token.
+            return self._config().get("SPOTIFY_TOKEN_CACHE") or DEFAULT_SPOTIFY_TOKEN_CACHE
         # os.getenv first so Docker's SPOTIFY_TOKEN_CACHE=/data/... (the persistent
         # volume, and where the engine reads the token) wins over a relative default
         # that would resolve to an ephemeral, possibly-missing dir in the container.
@@ -40,8 +44,8 @@ class SpotifyConnector(Connector):
         # and — because engine and connector request the identical scope — spotipy's
         # per-refresh scope rewrite can never narrow the cached token.
         return SpotifyOAuth(
-            client_id=self._store.get("SPOTIFY_CLIENT_ID"),
-            client_secret=self._store.get("SPOTIFY_CLIENT_SECRET"),
+            client_id=self._get("SPOTIFY_CLIENT_ID"),
+            client_secret=self._get("SPOTIFY_CLIENT_SECRET"),
             redirect_uri=redirect_uri,
             scope=SPOTIFY_SCOPE,
             cache_path=cache,
@@ -49,21 +53,21 @@ class SpotifyConnector(Connector):
         )
 
     def _cookie_on(self):
-        backend = self._store.get("SPOTIFY_WRITE_BACKEND") or os.getenv("SPOTIFY_WRITE_BACKEND") or "oauth"
+        backend = self._get("SPOTIFY_WRITE_BACKEND") or "oauth"
         return str(backend).strip().lower() == "cookie"
 
     def _isrc_app_on(self):
-        return bool(self._store.get("SPOTIFY_ISRC_CLIENTS") or os.getenv("SPOTIFY_ISRC_CLIENTS"))
+        return bool(self._get("SPOTIFY_ISRC_CLIENTS"))
 
     def status(self) -> ConnStatus:
         from ...engine import spotify
 
         if self._cookie_on():
             from ...engine.spotify_cookie import configured, validate_session
-            if not configured():
+            if not configured(account_id=self._account_id):
                 return ConnStatus("expired", "Web/cookie mode needs a new sp_dc cookie")
             try:
-                user_id = validate_session()
+                user_id = validate_session(account_id=self._account_id)
             except Exception as exc:
                 return ConnStatus("expired", str(exc))
             note = "Web/cookie · playlists, search and writes"
@@ -82,6 +86,8 @@ class SpotifyConnector(Connector):
         # reveal: it's a different app on a different grant, and the sync degrades to
         # slow single-track lookups without anything else going red. Cached upstream,
         # since this method answers a polled endpoint.
+        # The ISRC lookup app is a provider-level add-on (one pool shared by the
+        # engine's catalog reads) — it's not per-account, so the check is global.
         problem = spotify.isrc_app_problem()
         if problem:
             return ConnStatus("error", f"the ISRC lookup app is refused because {problem}. Syncs continue "
@@ -117,7 +123,7 @@ class SpotifyConnector(Connector):
         problem = spotify.tracks_probe_problem(probe.status_code, probe.text)
         if problem:
             return ConnStatus("error", f"that app can't do the batch /tracks lookup because {problem}")
-        self._store.save({"SPOTIFY_ISRC_CLIENTS": f"{client_id}:{client_secret}"})
+        self._save({"SPOTIFY_ISRC_CLIENTS": f"{client_id}:{client_secret}"})
         spotify.clear_isrc_probe_cache()
         return ConnStatus("connected", "ISRC app configured")
 
@@ -126,7 +132,7 @@ class SpotifyConnector(Connector):
         time, which a Development-Mode app can serve but only ~300 times a day."""
         from ...engine import spotify
 
-        self._store.save({"SPOTIFY_ISRC_CLIENTS": ""})
+        self._save({"SPOTIFY_ISRC_CLIENTS": ""})
         spotify.clear_isrc_probe_cache()
         return self.status()
 
@@ -145,25 +151,27 @@ class SpotifyConnector(Connector):
                 raise RuntimeError("no token returned")
         except Exception as e:
             return ConnStatus("error", f"Spotify rejected that sp_dc cookie ({e!r})")
-        path = sp_dc_path()
+        # The account's own 0600 cookie file (named accounts get a dedicated one,
+        # so enabling a second Spotify account never touches the first's cookie).
+        path = sp_dc_path(self._account_id)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with _open_private(path) as f:  # 0600 — it's a ~1-year account credential
             f.write(sp_dc)
-        self._store.save({"SPOTIFY_WRITE_BACKEND": "cookie"})
+        self._save({"SPOTIFY_WRITE_BACKEND": "cookie"})
         return ConnStatus("connected", "Web/cookie mode · OAuth app not required")
 
     def disable_cookie(self) -> ConnStatus:
-        """Revert the whole Spotify connector to OAuth. The cookie file is left in place so
+        """Revert this account's Spotify connector to OAuth. The cookie file is left in place so
         re-enabling needs no re-paste."""
-        self._store.save({"SPOTIFY_WRITE_BACKEND": "oauth"})
+        self._save({"SPOTIFY_WRITE_BACKEND": "oauth"})
         return self.status()
 
     def begin_redirect(self, redirect_uri: str) -> str:
-        self._store.save({"SPOTIFY_REDIRECT_URI": redirect_uri})
+        self._save({"SPOTIFY_REDIRECT_URI": redirect_uri})
         return self._oauth(redirect_uri).get_authorize_url()
 
     def complete_redirect(self, params: dict) -> ConnStatus:
-        redirect_uri = self._store.get("SPOTIFY_REDIRECT_URI")
+        redirect_uri = self._get("SPOTIFY_REDIRECT_URI")
         oauth = self._oauth(redirect_uri)
         code = oauth.parse_response_code(params.get("url") or params.get("code") or "")
         oauth.get_access_token(code, as_dict=False, check_cache=False)  # writes the token cache

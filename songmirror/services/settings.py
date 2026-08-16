@@ -14,6 +14,7 @@ wired in the app factory) makes wizard saves authoritative instead.
 import hashlib
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -68,7 +69,7 @@ PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
 # Per-account session/token FILES: a named account must never reuse (or
 # overwrite) the default account's file, so the snapshot points it at its own.
 _PER_ACCOUNT_FILE_KEYS: dict[str, tuple[str, ...]] = {
-    "spotify": ("SPOTIFY_TOKEN_CACHE", "SPOTIFY_SP_DC_FILE"),
+    "spotify": ("SPOTIFY_TOKEN_CACHE",),  # SPOTIFY_SP_DC_FILE is derived in account_config_snapshot (cookie file naming)
     "ytmusic": ("YTMUSIC_AUTH_FILE", "YTMUSIC_BROWSER_AUTH"),
     "tidal": ("TIDAL_TOKEN_FILE",),
     "deezer": ("DEEZER_WEB_SESSION_FILE", "DEEZER_TOKEN_FILE"),
@@ -117,6 +118,21 @@ class SettingsStore:
     @staticmethod
     def account_provider(account_id: str) -> str:
         return str(account_id).split(":", 1)[0]
+
+    def create_account_id(self, provider: str, label: str) -> str:
+        """A stable, unique account id for a new named profile: `{provider}:{slug}`
+        where slug is derived from the chosen label. Collisions get a numeric
+        suffix (`spotify:work-2`), and `default` is never reused as a name."""
+        base = re.sub(r"[^a-z0-9]+", "-", (label or "").strip().lower()).strip("-")
+        if not base or base == "default":
+            base = "account"
+        base = base[:24].rstrip("-")
+        slug, n = base, 2
+        existing = set(self.accounts())
+        while f"{provider}:{slug}" in existing:
+            slug = f"{base}-{n}"
+            n += 1
+        return f"{provider}:{slug}"
 
     @staticmethod
     def account_slug(account_id: str) -> str:
@@ -211,6 +227,11 @@ class SettingsStore:
             slug = self.account_slug(account_id)
             for key in _PER_ACCOUNT_FILE_KEYS.get(provider, ()):
                 config.setdefault(key, f"data/{slug}_{key.casefold()}.json")
+            # Spotify's cookie file lives at the path engine/spotify_cookie.py
+            # derives per account (spotify_sp_dc.<slug>.private) — mirror it here
+            # so a named account's snapshot and its connector agree on one file.
+            if provider == "spotify":
+                config.setdefault("SPOTIFY_SP_DC_FILE", f"data/spotify_sp_dc.{slug}.private")
         return config
 
     def migrate_accounts(self) -> int:

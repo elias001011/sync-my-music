@@ -8,36 +8,68 @@ na interface e nos conectores.
 
 | Área | Estado | Limite atual |
 | --- | --- | --- |
-| Jobs nomeados de playlists | Implementado | Selecionam provedores, não contas individuais. |
-| Pareamento explícito de playlists | Implementado | Opera sobre um único login por provedor. |
-| Transferência entre serviços | Implementado | Playlists; snapshots nomeados de Musify/Spotify/outros backups de conta podem ser origem manual. |
+| Jobs nomeados de playlists | Implementado | Selecionam **contas** (`account_id`); duas contas do mesmo serviço podem participar. |
+| Pareamento explícito de playlists | Implementado | Membros por `account_id`; jobs legados migrados para `:default` sem quebra. |
+| Transferência entre serviços | Implementado | Playlists; conta ao vivo x snapshot canônico são classificados por `auth_mode` e nunca se confundem. |
 | Versões de playlists | Implementado | Histórico limitado por playlist/provedor. |
 | Musify | Implementado/parcial | Importa `user.hive`, superfícies e recap; exporta playlists por link. A atualização continua manual. |
 | Sonora | Implementado/parcial | Backup-v2 e bridge LAN pareada; depende da compatibilidade do protocolo do app. |
-| Recap unificado | Implementado | Entrada por eventos e snapshots substituíveis; não escreve histórico nos serviços. |
-| Banco canônico | Parcial | Musify, Sonora e listens o alimentam; passes comerciais ainda usam também o archive/cache herdado. |
-| Curtidas, álbuns e artistas | Parcial | Modelo canônico e adapters Musify/Sonora existem; faltam adapters completos nos serviços comerciais. |
-| Múltiplas contas no mesmo serviço | Parcial | Imports/restores nomeados são isolados, têm backup próprio e podem alimentar transferências. Perfis simultâneos de credenciais em jobs ainda faltam. |
-| Spotify totalmente sem OAuth | Implementado/parcial | `sp_dc` cobre rootlist/pastas, leitura, busca e escrita. Curtidas/álbuns/artistas contínuos ainda dependem de export oficial. |
-| Backup do próprio SYNC | Implementado | ZIP versionado e validado; `sp_dc` é excluído até existir criptografia. |
+| Recap unificado | Implementado | Filtro por combinação de contas em card anual, histórico mensal, tops, minutos e breakdown. |
+| Banco canônico | Implementado/parcial | Musify, Sonora, exports oficiais, listens e importação **ao vivo** (botão por conta) o alimentam; curtidas/álbuns/artistas ao vivo seguem sem adapters comerciais. |
+| Curtidas, álbuns e artistas | Parcial | Modelo canônico e adapters Musify/Sonora existem; nos serviços comerciais só via export oficial (marcado `r`/`-` por superfície). |
+| Múltiplas contas no mesmo serviço | Implementado | Perfis ao vivo com credenciais/tokens/cookies/caches isolados por conta; adicionar, renomear, pausar, remover e importar pela UI. |
+| Spotify totalmente sem OAuth | Implementado/parcial | `sp_dc` cobre rootlist/pastas, leitura, busca e escrita, com arquivo 0600 **por conta**. Curtidas/álbuns/artistas contínuos ainda dependem de export oficial. |
+| Backup do próprio SYNC | Implementado | ZIP versionado e validado; `sp_dc` (default e por conta) é excluído até existir criptografia. |
+
+## Concluído na rodada multi-conta
+
+- ~~Jobs nomeados selecionam provedores~~ → selecionam contas (`account_id`), com
+  origem e destinos por conta e duas contas do mesmo serviço no mesmo job.
+- ~~Accounts trabalha com uma conexão por provedor~~ → perfis nomeados com
+  adicionar, conectar/reconectar, renomear, pausar, superfícies por conta e
+  remoção com confirmação; secrets nunca são ecoados à UI.
+- ~~Conectores operam sobre o default~~ → cada connector é instanciado por conta:
+  Spotify `sp_dc`/OAuth, YouTube Music browser/OAuth e os demais leem e gravam
+  somente o namespace da conta selecionada.
+- ~~Snapshots x contas ao vivo se confundiam no browse~~ → classificação única
+  por `auth_mode` (`canonical_target.is_canonical_account`) usada por
+  PlaylistService, TransferService e Accounts.
+- ~~N-way colidia no `source`~~ → reconcile chaveia por `state_key`; duas contas
+  Spotify mantêm diretórios, caches e baselines separados.
+- ~~Filtro de recap por conta~~ → implementado (combinação de contas em todos os
+  totais e breakdown).
+- ~~Backup geral não refletia registry~~ → backup/restore inclui `ACCOUNTS`,
+  jobs com `accounts` e dados canônicos por conta; backups por conta seguem sem
+  secrets.
+- ~~E2E podia ficar preso na CI~~ → watchdog global no runner (30 min) com
+  teardown forçado e falha explícita.
 
 ## Próximos blocos
 
-### 1. Múltiplas contas por serviço
+### 1. Superfícies comerciais contínuas
 
-- Criar perfis de credenciais isolados para contas **ao vivo**; IDs estáveis e
-  slots isolados de restore/import já existem.
-- Fazer Accounts adicionar, renomear, pausar e remover cada perfil.
-- Trocar seletores de jobs, links e transferências de `provider` para
-  `account_id`.
-- Isolar tokens, caches e sessões por conta.
-- Migrar a conta única existente para `<provider>:default` sem perda.
-- A separação e deduplicação de recaps por conta já existe; falta o filtro de
-  combinação/seleção na visualização.
+- Importar curtidas, álbuns e artistas ao vivo (hoje: export oficial ou import
+  Musify/Sonora; os conectores comerciais marcam essas superfícies como `-` ou
+  `r` conforme o adapter real).
+- Sincronizar superfícies entre serviços somente quando ambos os lados
+  declararem suporte seguro (`rw`).
 
-Não será adicionada uma UI que apenas pareça multi-conta: o recurso só fica
-pronto quando leitura, escrita, scheduler, transferências e backup respeitarem o
-perfil selecionado.
+### 2. Spotify Web sem Premium — superfícies contínuas
+
+- ~~Transformar o modo `sp_dc` em backend completo, não somente de escrita.~~
+- ~~Listar a `rootlist`, pastas, playlists próprias e playlists salvas.~~
+- Importar curtidas, álbuns e artistas seguidos via Web Player (hoje só export
+  oficial; a superfície é marcada conforme a capacidade real).
+- ~~Pesquisar/resolver faixas sem depender do cliente OAuth.~~
+- ~~Renovar o token temporário, detectar cookie expirado e mostrar o erro real.~~
+- ~~Expor os estados `OAuth oficial`, `Web/cookie` e `Desativado`.~~
+
+Segurança:
+
+- `sp_dc` permanece em arquivo `0600` por conta, nunca em logs.
+- Backups ZIP sem criptografia não incluem `sp_dc` (default nem nomeados).
+- Depois de existir backup criptografado autenticado, a inclusão do cookie será
+  uma opção explícita, nunca o padrão silencioso.
 
 ### 2. Spotify Web sem Premium + exportação oficial
 

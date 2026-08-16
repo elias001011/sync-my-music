@@ -229,18 +229,10 @@ class TransferService:
     def _is_canonical_slot(self, provider_id) -> bool:
         """Whether an id refers to a restored/imported local snapshot (read-only
         source) rather than a live account. Live accounts — including `:default`
-        profiles and named multi-account profiles — build real engine targets."""
-        if self._database is None:
-            return False
-        if provider_id == "musify" or provider_id.startswith("musify:"):
-            return True
-        if ":" not in provider_id:
-            return False
-        row = next((r for r in self._database.accounts() if r["id"] == provider_id), None)
-        if not row:
-            return False
-        return str(row.get("auth_mode") or "") in ("official-export", "sync-account-restore",
-                                                    "hive-backup", "aggregate-import", "history-import")
+        profiles and named multi-account profiles — build real engine targets.
+        Uses the shared classifier so PlaylistService and transfers agree."""
+        from .canonical_target import is_canonical_account
+        return is_canonical_account(self._database, provider_id)
 
     async def _run(self, job, spec):
         if job.get("_control") == "stop":  # stopped while still queued — never start

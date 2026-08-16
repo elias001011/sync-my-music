@@ -210,13 +210,21 @@ Already implemented:
 - Official Spotify ZIP/JSON import with idempotent monthly/yearly history.
 - Credential-free backup/restore per provider account, including isolated
   manual snapshots that can feed one-off transfers.
+- Multiple live accounts per service, side by side: named profiles with
+  isolated credentials, tokens, cookies and caches; per-account surfaces,
+  pause switches, connect/reconnect, rename and confirmed removal; jobs,
+  transfers and playlist browsing select accounts (`account_id`), so two
+  Spotify accounts can participate in one sync.
+- Recaps filtered by any combination of accounts (annual card, monthly
+  history, top tracks/artists, minutes, plays and per-service breakdown).
+- Live "Import playlists" per account: pulls the account's playlists through
+  its own connector into the canonical library under that account's id.
 
 Still evolving:
 
 - Automatic liked-track, followed-artist, and saved-album adapters for every
-  commercial provider.
-- Multiple simultaneous live credential profiles in scheduled sync jobs (manual
-  restore/import account slots are already isolated and usable as sources).
+  commercial provider (today: official exports / Musify / Sonora only — the UI
+  marks each surface read-only or unsupported where no real adapter exists).
 - Authentication and authorization suitable for exposing the dashboard outside
   a trusted LAN.
 - More import formats, conflict tooling, integration tests, and refreshed project screenshots.

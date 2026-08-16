@@ -84,6 +84,190 @@ def test_spotify_cookie_files_isolated_per_account(tmp_path, monkeypatch):
     assert not sc.configured("spotify:personal")
 
 
+def test_create_account_id_generates_unique_named_profiles(tmp_path):
+    store = SettingsStore(dir=tmp_path)
+    assert store.create_account_id("spotify", "Work") == "spotify:work"
+    store.save_account("spotify:work", label="Work")
+    # Collisions get a numeric suffix; `default` is never reused as a name.
+    assert store.create_account_id("spotify", "Work") == "spotify:work-2"
+    assert store.create_account_id("spotify", "default") == "spotify:account"
+    assert store.create_account_id("tidal", "Conta Pessoal") == "tidal:conta-pessoal"
+
+
+def test_connector_named_account_never_reads_default_credentials(tmp_path, monkeypatch):
+    """A named profile's connector reads/writes ONLY its own registry namespace:
+    it can't inherit the default's flat keys or env, and saving never touches
+    the default's config."""
+    from songmirror.services.accounts.spotify import SpotifyConnector
+
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "default-cid", "SPOTIFY_CLIENT_SECRET": "default-secret"})
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "env-cid")
+
+    named = SpotifyConnector(store, account_id="spotify:work")
+    assert named._get("SPOTIFY_CLIENT_ID") is None  # never inherits default/env
+    named._save({"SPOTIFY_CLIENT_ID": "work-cid"})
+    # Wrote only the named account's namespace.
+    assert store.account_config("spotify:work", "SPOTIFY_CLIENT_ID") == "work-cid"
+    assert store.get("SPOTIFY_CLIENT_ID") == "default-cid"  # flat keys untouched
+    assert store.account_config("spotify:default", "SPOTIFY_CLIENT_ID") == "default-cid"
+
+    default = SpotifyConnector(store, account_id="spotify:default")
+    assert default._get("SPOTIFY_CLIENT_ID") == "default-cid"  # migration fallback
+    default._save({"SPOTIFY_CLIENT_SECRET": "new-secret"})
+    # The default account also mirrors flat keys so legacy env consumers work.
+    assert store.get("SPOTIFY_CLIENT_SECRET") == "new-secret"
+
+
+def test_connector_named_account_gets_own_token_file(tmp_path):
+    from songmirror.services.accounts.spotify import SpotifyConnector
+
+    store = SettingsStore(dir=tmp_path)
+    named = SpotifyConnector(store, account_id="spotify:work")
+    default = SpotifyConnector(store, account_id="spotify:default")
+    assert named._token_cache() != default._token_cache()
+    assert "spotify-" in named._token_cache()
+
+
+def test_normalize_accounts_handles_provider_and_account_ids():
+    from songmirror.web.routers.syncs import _normalize_accounts
+
+    # Legacy providers -> their :default accounts.
+    assert _normalize_accounts({"providers": "spotify,apple"})["accounts"] == \
+        "spotify:default,apple:default"
+    # Already-account ids (multi-account UI) pass through verbatim.
+    assert _normalize_accounts({"providers": "spotify:pessoal,ytmusic:default"})["accounts"] == \
+        "spotify:pessoal,ytmusic:default"
+    # Mixed forms normalize each entry independently.
+    assert _normalize_accounts({"providers": "spotify:pessoal,apple"})["accounts"] == \
+        "spotify:pessoal,apple:default"
+    # Explicit accounts always win.
+    assert _normalize_accounts({"providers": "spotify", "accounts": "spotify:work"})["accounts"] == \
+        "spotify:work"
+
+
+def test_playlist_service_browse_live_account_is_never_canonical(tmp_path):
+    """A live named account that ALSO has a service_accounts row must browse the
+    real provider target — not stale canonical rows. Only restored/imported
+    snapshots (auth_mode marks them) read from the canonical database."""
+    from songmirror.services.music_database import MusicDatabase
+    from songmirror.services.playlists import PlaylistService
+
+    db = MusicDatabase(tmp_path / "m.db")
+    # A live account synced into service_accounts (as list_accounts does).
+    db.sync_account("spotify", "Live Work", "connected", "oauth_redirect", account_id="spotify:work")
+    # A restored snapshot with canonical rows.
+    db.import_provider_library(
+        "spotify", "spotify:restored", "Restored",
+        playlists=[{"provider_id": "pl1", "name": "Road",
+                    "tracks": [{"provider_track_id": "t1", "track_name": "Song",
+                                 "artist_name": "A", "duration_ms": 1000}]}])
+    service = PlaylistService(SettingsStore(dir=tmp_path), db)
+
+    # Live account with no credentials: builds a real (unconfigured) target and
+    # returns [] — never the canonical rows.
+    assert service.browse("spotify:work") == []
+    # The restored snapshot still reads its canonical playlists.
+    rows = service.browse("spotify:restored")
+    assert [r["name"] for r in rows] == ["Road"]
+
+
+def test_nway_reconcile_keeps_two_accounts_of_one_provider_separate(tmp_path):
+    """Reconcile keys playlists by state_key: two Spotify accounts participating
+    in one N-way pass each get their OWN playlist + baseline, never colliding on
+    the shared `source` string."""
+    from songmirror.engine import archive
+    from songmirror.engine.targets.base import reconcile
+
+    class _Peer:
+        def __init__(self, state_key, isrcs):
+            self.state_key = state_key
+            self.source = "spotify"  # same provider for both accounts
+            self.tag = self.name = state_key
+            self._isrcs = list(isrcs)
+
+        def playlist_tracks(self, pl):
+            return [{"id": f"{self.state_key}-{i}", "name": f"Song {i}", "artists": ["A"],
+                     "artist": "A", "duration_ms": 1000, "isrc": i, "added_at": "2020"}
+                    for i in self._isrcs]
+
+        def track_id(self, t):
+            return t.get("id")
+
+        def prefetch(self, norms, cache):
+            pass
+
+        def native_isrc_map(self, cache):
+            return {}
+
+        def resolve(self, norm, cache):
+            return f"{self.state_key}-{norm['isrc']}", "search"
+
+        def add(self, pl, ids):
+            for tid in ids:
+                isrc = tid.rsplit("-", 1)[1]
+                if isrc not in self._isrcs:
+                    self._isrcs.append(isrc)
+
+        def remove(self, pl, raw):
+            if raw["isrc"] in self._isrcs:
+                self._isrcs.remove(raw["isrc"])
+
+    conn = archive.connect(str(tmp_path / "s.db"))
+    work = _Peer("spotify:work", ["A", "B"])
+    personal = _Peer("spotify:personal", ["A"])
+    # Each account's playlist lives under ITS state_key — the same source string
+    # must never cause a collision or a KeyError.
+    playlists = {"spotify:work": {"id": "s1"}, "spotify:personal": {"id": "s2"}}
+    caches = {p.state_key: {"isrc": {}, "search": {}, "dirty": False} for p in (work, personal)}
+    stats = reconcile([work, personal], "Mix", playlists, caches, conn,
+                      execute=True, max_removals=25, max_adds=200)
+    # Work's B propagated to personal (its own playlist, its own baseline).
+    assert stats["added"] >= 1
+    assert "B" in personal._isrcs
+    # Baselines are recorded under EACH account's own state key — no
+    # cross-account contamination on the shared source string.
+    assert archive.get_playlist_state(conn, "mix", "spotify:work") == {"i:A", "i:B"}
+    assert archive.get_playlist_state(conn, "mix", "spotify:personal") == {"i:A"}
+    assert archive.get_playlist_state(conn, "mix", "spotify") == set()
+    conn.close()
+
+
+def test_web_account_crud_named_profiles(tmp_path):
+    """The accounts API: create a named profile, list it as a live account,
+    rename it, and remove it only with explicit confirmation."""
+    from fastapi.testclient import TestClient
+    from songmirror.web import create_app
+
+    with TestClient(create_app(settings=SettingsStore(dir=tmp_path))) as client:
+        created = client.post("/api/accounts/spotify/accounts", json={"label": "Work"}).json()
+        assert created["account_id"] == "spotify:work"
+
+        accounts = client.get("/api/accounts").json()
+        work = next(a for a in accounts if a["id"] == "spotify:work")
+        assert work["live"] is True and work["name"] == "Work"
+        assert work["state"] == "unconfigured"
+        assert not work.get("local_snapshot")
+
+        # Per-account config save lands in the named namespace only.
+        client.post("/api/accounts/spotify:work/config", json={"SPOTIFY_CLIENT_ID": "work-cid"})
+        store = client.app.state.settings
+        assert store.account_config("spotify:work", "SPOTIFY_CLIENT_ID") == "work-cid"
+        assert store.get("SPOTIFY_CLIENT_ID") is None  # default untouched
+
+        # Rename via prefs.
+        renamed = client.put("/api/accounts/spotify:work/prefs", json={"label": "Work 2"}).json()
+        assert renamed["name"] == "Work 2"
+
+        # Remove requires explicit confirmation.
+        assert client.delete("/api/accounts/spotify:work/remove").status_code == 400
+        removed = client.delete("/api/accounts/spotify:work/remove", params={"confirm": True}).json()
+        assert removed["removed"] is True
+        assert all(a["id"] != "spotify:work" for a in client.get("/api/accounts").json())
+        # The default account can't be removed.
+        assert client.delete("/api/accounts/spotify/remove", params={"confirm": True}).status_code == 400
+
+
 def test_syncjob_legacy_providers_migrate_to_default_accounts(tmp_path):
     store = SyncStore(dir=tmp_path)
     store.upsert(SyncJob(name="Legacy", providers="spotify,apple", source="spotify"))

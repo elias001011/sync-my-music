@@ -18,16 +18,16 @@ class JellyfinConnector(Connector):
     def status(self) -> ConnStatus:
         if not self._configured("JELLYFIN_URL", "JELLYFIN_API_KEY"):
             return ConnStatus("unconfigured")
-        return ConnStatus("connected", self._store.get("JELLYFIN_URL"))
+        return ConnStatus("connected", self._get("JELLYFIN_URL") or "")
 
     def submit(self, values: dict) -> ConnStatus:
-        self._store.save({k: values.get(k) for k in ("JELLYFIN_URL", "JELLYFIN_API_KEY", "JELLYFIN_USER_ID")})
+        self._save({k: values.get(k) for k in ("JELLYFIN_URL", "JELLYFIN_API_KEY", "JELLYFIN_USER_ID")})
         ok, detail = self._ping()
         return ConnStatus("connected" if ok else "error", detail)
 
     def _ping(self):
-        url = (self._store.get("JELLYFIN_URL") or "").rstrip("/")
-        key = self._store.get("JELLYFIN_API_KEY")
+        url = (self._get("JELLYFIN_URL") or "").rstrip("/")
+        key = self._get("JELLYFIN_API_KEY")
         if not (url and key):
             return False, "missing url/key"
         try:

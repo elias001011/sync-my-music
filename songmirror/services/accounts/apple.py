@@ -29,7 +29,7 @@ class AppleConnector(Connector):
         return ConnStatus("connected", detail) if ok else ConnStatus("expired", detail)
 
     def submit(self, values: dict) -> ConnStatus:
-        self._store.save({k: values.get(k) for k in ("APPLE_BEARER_TOKEN", "APPLE_USER_TOKEN", "APPLE_STOREFRONT")})
+        self._save({k: values.get(k) for k in ("APPLE_BEARER_TOKEN", "APPLE_USER_TOKEN", "APPLE_STOREFRONT")})
         ok, detail = self._validate()
         if ok:
             self._ensure_storefront()  # auto-detect the account's region when the field was left blank
@@ -41,13 +41,13 @@ class AppleConnector(Connector):
         region. A user-set value is left untouched; best-effort otherwise (a blank
         storefront falls back to 'us' in the engine). No-op once one is stored, so
         it's a single lookup on connect, not per status poll."""
-        if (self._store.get("APPLE_STOREFRONT") or "").strip():
+        if (self._get("APPLE_STOREFRONT") or "").strip():
             return
         try:
             r = requests.get(
                 f"{AMP}/me/storefront",
                 headers={"Authorization": f"Bearer {self._bearer()}",
-                         "Media-User-Token": self._store.get("APPLE_USER_TOKEN") or "",
+                         "Media-User-Token": self._get("APPLE_USER_TOKEN") or "",
                          "Origin": "https://music.apple.com"},
                 timeout=15,
             )
@@ -55,17 +55,17 @@ class AppleConnector(Connector):
                 data = r.json().get("data") or []
                 sf = (data[0].get("id") or "").strip() if data else ""
                 if sf:
-                    self._store.save({"APPLE_STOREFRONT": sf})
+                    self._save({"APPLE_STOREFRONT": sf})
         except Exception:
             pass  # leave blank; the engine defaults to 'us'
 
     def _bearer(self):
-        b = self._store.get("APPLE_BEARER_TOKEN") or ""
+        b = self._get("APPLE_BEARER_TOKEN") or ""
         return b[7:] if b.lower().startswith("bearer ") else b
 
     def _validate(self):
         bearer = self._bearer()
-        user = self._store.get("APPLE_USER_TOKEN") or ""
+        user = self._get("APPLE_USER_TOKEN") or ""
         if not (bearer and user):
             return False, "missing tokens"
         try:

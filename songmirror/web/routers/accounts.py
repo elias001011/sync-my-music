@@ -1,6 +1,14 @@
-"""Account wizard endpoints — connect/inspect each service uniformly."""
+"""Account wizard endpoints — connect/inspect each service uniformly.
 
+Every route accepts either a bare provider id (`spotify`, legacy — resolves to
+`spotify:default`) or a full account id (`spotify:work`), so the multi-account
+UI can connect/configure/reconnect ONE specific profile without ever touching
+another account's credentials, tokens or cookie files.
+"""
+
+import glob
 import html
+import os
 import re
 from dataclasses import asdict
 
@@ -15,9 +23,30 @@ from ...services.settings import DEFAULT_SURFACES, SURFACES
 
 router = APIRouter()
 
+# Auth modes that mark a LOCAL read-only snapshot (restored backup / official
+# export / history import), as opposed to a live connected account. Centralized
+# here so the Accounts list, PlaylistService and TransferService agree.
+CANONICAL_AUTH_MODES = {"official-export", "sync-account-restore", "hive-backup",
+                        "aggregate-import", "history-import"}
 
-def _conn(request: Request, cid: str):
-    return CONNECTORS[cid](request.app.state.settings)
+
+def _resolve_account_id(request: Request, cid: str) -> str:
+    """`spotify` -> `spotify:default`; `spotify:work` -> itself. 404 for an
+    unknown provider or an account the registry doesn't know (other than the
+    default, which always exists implicitly)."""
+    if ":" in cid:
+        provider = cid.split(":", 1)[0]
+        if provider not in CONNECTORS:
+            raise HTTPException(status_code=404, detail=f"unknown provider {provider}")
+        return cid
+    if cid not in CONNECTORS:
+        raise HTTPException(status_code=404, detail=f"unknown provider {cid}")
+    return f"{cid}:default"
+
+
+def _conn(request: Request, account_id: str):
+    provider = account_id.split(":", 1)[0]
+    return CONNECTORS[provider](request.app.state.settings, account_id=account_id)
 
 
 def _redirect_uri(request: Request, cid: str) -> str:
@@ -35,36 +64,50 @@ def list_accounts(request: Request):
     disabled = {item.strip() for item in str(store.get("DISABLED_PROVIDERS") or "").split(",") if item.strip()}
     out = []
     for cid, cls in CONNECTORS.items():
-        c = cls(store)
-        st = c.status()
-        account_id = f"{cid}:default"
-        profile = store.account(account_id) or {}
-        fields = []
-        for f in c.config_fields:
-            d = asdict(f)
-            cur = store.account_config(account_id, f.key) or ""
-            # Pre-fill on reconnect, but NEVER echo a secret back to the browser —
-            # send its value only when it's non-secret; a `configured` flag lets the
-            # wizard show "saved — leave blank to keep" for a stored secret instead.
-            d["value"] = "" if f.secret else cur
-            d["configured"] = bool(cur)
-            fields.append(d)
-        out.append({
-            "id": cid, "provider": cid, "account_id": account_id, "name": c.name, "auth_kind": c.auth_kind,
-            "fields": fields,
-            "state": st.state, "detail": st.detail,
-            # Browse-only services (Jellyfin) can't be a sync/transfer peer — the
-            # UI filters its source/destination pickers on this.
-            "transferable": is_peer(cid),
-            "capabilities": PROVIDER_CAPABILITIES.get(cid, {}),
-            "surface_capabilities": SURFACE_CAPABILITIES.get(cid, {}),
-            "enabled": cid not in disabled and profile.get("enabled", True),
-            "surfaces": profile.get("surfaces") or DEFAULT_SURFACES,
-        })
-        if hasattr(request.app.state, "music_db"):
-            request.app.state.music_db.sync_account(cid, c.name, st.state, c.auth_kind,
-                                                    account_id=account_id,
-                                                    enabled=out[-1]["enabled"])
+        # Every live profile for this provider: the default account plus any
+        # named profiles the user created — each one a separate card with its
+        # own connect state, surfaces and pause switch.
+        account_ids = [f"{cid}:default"]
+        account_ids += [aid for aid in store.accounts()
+                        if aid.startswith(f"{cid}:") and aid != f"{cid}:default"]
+        for account_id in account_ids:
+            c = cls(store, account_id=account_id)
+            st = c.status()
+            profile = store.account(account_id) or {}
+            label = profile.get("label") or c.name
+            fields = []
+            for f in c.config_fields:
+                d = asdict(f)
+                cur = store.account_config(account_id, f.key) or ""
+                # Pre-fill on reconnect, but NEVER echo a secret back to the browser —
+                # send its value only when it's non-secret; a `configured` flag lets the
+                # wizard show "saved — leave blank to keep" for a stored secret instead.
+                d["value"] = "" if f.secret else cur
+                d["configured"] = bool(cur)
+                fields.append(d)
+            # Public id: the bare provider for the default account (legacy
+            # contract — old UIs and fixtures use "spotify"); the full account
+            # id for named profiles. Every route accepts both forms.
+            public_id = cid if account_id == f"{cid}:default" else account_id
+            entry = {
+                "id": public_id, "provider": cid, "account_id": account_id, "name": label,
+                "auth_kind": c.auth_kind, "fields": fields,
+                "state": st.state, "detail": st.detail,
+                # Browse-only services (Jellyfin) can't be a sync/transfer peer — the
+                # UI filters its source/destination pickers on this.
+                "transferable": is_peer(cid),
+                "capabilities": PROVIDER_CAPABILITIES.get(cid, {}),
+                "surface_capabilities": SURFACE_CAPABILITIES.get(cid, {}),
+                # Live connected profile (as opposed to a restored local snapshot).
+                "live": True,
+                "enabled": cid not in disabled and profile.get("enabled", True),
+                "surfaces": profile.get("surfaces") or DEFAULT_SURFACES,
+            }
+            out.append(entry)
+            if hasattr(request.app.state, "music_db"):
+                request.app.state.music_db.sync_account(cid, label, st.state, c.auth_kind,
+                                                        account_id=account_id,
+                                                        enabled=entry["enabled"])
     # Musify has no remote login. It becomes a read-only transfer source after
     # the user uploads user.hive, so expose it alongside connected services only
     # when that local snapshot actually exists.
@@ -86,7 +129,7 @@ def list_accounts(request: Request):
             })
         for imported in database_accounts:
             if (imported["provider"] == "musify" or imported["id"] == f"{imported['provider']}:default"
-                    or imported.get("auth_mode") not in {"official-export", "sync-account-restore"}):
+                    or str(imported.get("auth_mode") or "") not in CANONICAL_AUTH_MODES):
                 continue
             out.append({
                 "id": imported["id"], "provider": imported["provider"], "name": imported["label"],
@@ -100,57 +143,91 @@ def list_accounts(request: Request):
     return out
 
 
+@router.post("/api/accounts/{cid}/accounts")
+def create_account(cid: str, request: Request, body: dict = Body(...)):
+    """Create a new named live profile for a provider: `{provider}:{slug}` with
+    its own isolated config namespace. Nothing is inherited from the default
+    account — the user connects it separately."""
+    provider = cid.split(":", 1)[0] if ":" in cid else cid
+    if provider not in CONNECTORS:
+        raise HTTPException(status_code=404, detail=f"unknown provider {provider}")
+    store = request.app.state.settings
+    label = str(body.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="choose a name for the account")
+    account_id = store.create_account_id(provider, label)
+    store.save_account(account_id, label=label, enabled=True)
+    return {"ok": True, "account_id": account_id, "provider": provider, "name": label}
+
+
 @router.put("/api/accounts/{cid}/enabled")
 def set_account_enabled(cid: str, request: Request, body: dict = Body(...)):
-    if cid not in CONNECTORS:
-        return {"ok": False}
-    disabled = {item.strip() for item in str(request.app.state.settings.get("DISABLED_PROVIDERS") or "").split(",") if item.strip()}
-    if bool(body.get("enabled")):
-        disabled.discard(cid)
-    else:
-        disabled.add(cid)
-    request.app.state.settings.save({"DISABLED_PROVIDERS": ",".join(sorted(disabled))})
-    return {"ok": True}
+    account_id = _resolve_account_id(request, cid)
+    enabled = bool(body.get("enabled"))
+    request.app.state.settings.save_account(account_id, enabled=enabled)
+    if hasattr(request.app.state, "music_db"):
+        try:
+            request.app.state.music_db.set_account_enabled(account_id, enabled)
+        except KeyError:
+            pass  # no canonical rows yet — the flag lives in the registry
+    return {"ok": True, "account_id": account_id}
 
 
 @router.put("/api/accounts/{cid}/prefs")
 def set_account_prefs(cid: str, request: Request, body: dict = Body(...)):
-    """Per-account switches: pause the whole profile, or disable individual
-    surfaces (playlists / liked tracks / albums / artists / history). Disabling
-    a surface never deletes already-imported data — it only stops new imports
-    and sync reads for it."""
-    if cid not in CONNECTORS:
+    """Per-account switches: rename the profile, pause the whole account, or
+    disable individual surfaces (playlists / liked tracks / albums / artists /
+    history). Disabling a surface never deletes already-imported data — it only
+    stops new imports and sync reads for it."""
+    account_id = _resolve_account_id(request, cid)
+    if account_id.split(":", 1)[0] not in CONNECTORS:
         raise HTTPException(status_code=404, detail="unknown provider")
     store = request.app.state.settings
-    account_id = f"{cid}:default"
     surfaces = {
         surface: bool(body.get("surfaces", {}).get(surface))
         for surface in SURFACES if surface in (body.get("surfaces") or {})
     }
+    label = body.get("label")
     enabled = body.get("enabled")
-    store.save_account(account_id, enabled=(bool(enabled) if enabled is not None else None),
+    store.save_account(account_id, label=(str(label).strip() if label else None),
+                       enabled=(bool(enabled) if enabled is not None else None),
                        surfaces=surfaces or None)
     profile = store.account(account_id)
     if hasattr(request.app.state, "music_db"):
         try:
             request.app.state.music_db.set_account_enabled(account_id, profile["enabled"])
+            if label:
+                request.app.state.music_db.rename_account(account_id, str(label).strip())
         except KeyError:
             pass  # no canonical rows yet — the flag lives in the registry
     return {"ok": True, "account_id": account_id, "enabled": profile["enabled"],
-            "surfaces": profile["surfaces"]}
+            "surfaces": profile["surfaces"], "name": profile["label"]}
 
 
 @router.post("/api/accounts/{cid}/config")
 def save_config(cid: str, request: Request, values: dict = Body(...)):
-    request.app.state.settings.save(values)
-    return {"ok": True}
+    """Save app-config fields for ONE account. Values land in the account's own
+    registry namespace (`:default` also mirrors the flat keys for legacy)."""
+    account_id = _resolve_account_id(request, cid)
+    provider = account_id.split(":", 1)[0]
+    connector = CONNECTORS.get(provider)
+    if connector is None:
+        raise HTTPException(status_code=404, detail=f"unknown provider {provider}")
+    allowed = {f.key for f in connector.config_fields}
+    payload = {k: v for k, v in values.items() if k in allowed}
+    if payload:
+        c = _conn(request, account_id)
+        c._save(payload)
+    return {"ok": True, "account_id": account_id}
 
 
 @router.post("/api/accounts/{cid}/connect")
 async def connect(cid: str, request: Request):
-    c = _conn(request, cid)
+    account_id = _resolve_account_id(request, cid)
+    provider = account_id.split(":", 1)[0]
+    c = _conn(request, account_id)
     if c.auth_kind == "oauth_redirect":
-        uri = _redirect_uri(request, cid)
+        uri = _redirect_uri(request, provider)
         return {"kind": "redirect", "url": c.begin_redirect(uri), "redirect_uri": uri}
     if c.auth_kind == "oauth_device":
         return {"kind": "device", **asdict(c.begin_device())}
@@ -164,17 +241,19 @@ def oauth_callback(cid: str, request: Request):
     # provider-side failure like Spotify's "server_error") instead of a code.
     # Treat that as a failed connection and, likewise, catch any token-exchange
     # error — the callback must never 500 and show a raw "Internal Server Error".
+    provider = cid.split(":", 1)[0]
+    account_id = cid if ":" in cid else f"{cid}:default"
     err = request.query_params.get("error")
     if err:
-        st = ConnStatus("error", f"{CONNECTORS[cid].name} returned '{err}' — nothing was authorized.")
+        st = ConnStatus("error", f"{CONNECTORS[provider].name} returned '{err}' — nothing was authorized.")
     else:
         try:
-            st = _conn(request, cid).complete_redirect({"url": str(request.url)})
+            st = _conn(request, account_id).complete_redirect({"url": str(request.url)})
         except Exception as e:
             st = ConnStatus("error", f"could not finish authorization ({e})")
     return HTMLResponse(
         f"<body style='font-family:system-ui;padding:2rem'>"
-        f"<h2>{html.escape(CONNECTORS[cid].name)}: {html.escape(st.state)}</h2>"
+        f"<h2>{html.escape(CONNECTORS[provider].name)}: {html.escape(st.state)}</h2>"
         f"<p>{html.escape(st.detail or '')}</p>"
         f"<p>You can close this tab and return to the app.</p></body>"
     )
@@ -184,57 +263,101 @@ def oauth_callback(cid: str, request: Request):
 async def poll(cid: str, request: Request):
     body = await request.json()
     dc = DeviceCode("", "", body["device_code"], body.get("interval", 5))
-    st = _conn(request, cid).poll_device(dc)
+    st = _conn(request, _resolve_account_id(request, cid)).poll_device(dc)
     return {"state": st.state, "detail": st.detail}
 
 
 @router.delete("/api/accounts/{cid}")
 def disconnect(cid: str, request: Request):
-    c = _conn(request, cid)
+    """Clear ONE account's credentials (the profile stays, unconfigured)."""
+    account_id = _resolve_account_id(request, cid)
+    c = _conn(request, account_id)
     c.disconnect()
-    return {"ok": True}
+    return {"ok": True, "account_id": account_id}
+
+
+@router.delete("/api/accounts/{cid}/remove")
+def remove_account(cid: str, request: Request, confirm: bool = False):
+    """Permanently remove a named live profile: registry entry, its per-account
+    token/cookie files, and its canonical rows. The `:default` account can't be
+    removed (it's the migration anchor) — disconnect it instead. Destructive, so
+    it requires an explicit `confirm=1` query param."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="confirm this deletion explicitly")
+    account_id = _resolve_account_id(request, cid)
+    if account_id.endswith(":default"):
+        raise HTTPException(status_code=400, detail="the default account can't be removed — disconnect it instead")
+    store = request.app.state.settings
+    # Per-account session/cookie files (0600 secrets) are deleted so the removed
+    # account leaves no credential behind. The default account's files are never
+    # touched.
+    data_dir = os.path.dirname(store.env_path) or "."
+    slug = store.account_slug(account_id)
+    for pattern in (f"{data_dir}/{slug}_*.json", f"{data_dir}/*.{slug}.*.private",
+                    f"{data_dir}/*.{slug}*.private"):
+        for path in glob.glob(pattern):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    store.delete_account_registry(account_id)
+    if hasattr(request.app.state, "music_db"):
+        try:
+            request.app.state.music_db.delete_account(account_id)
+        except KeyError:
+            pass
+    return {"ok": True, "account_id": account_id, "removed": True}
 
 
 @router.post("/api/accounts/ytmusic/browser")
 async def ytmusic_enable_browser(request: Request, body: dict = Body(...)):
     """Turn on YouTube Music's no-quota (browser cookies) backend from pasted
     music.youtube.com request headers — the fix for large backfills hitting the
-    Data API quota."""
-    st = _conn(request, "ytmusic").enable_browser(body.get("headers", ""))
-    return {"state": st.state, "detail": st.detail}
+    Data API quota. `account_id` (optional) targets a specific profile."""
+    account_id = _resolve_account_id(request, body.get("account_id") or "ytmusic")
+    st = _conn(request, account_id).enable_browser(body.get("headers", ""))
+    return {"state": st.state, "detail": st.detail, "account_id": account_id}
 
 
 @router.delete("/api/accounts/ytmusic/browser")
-def ytmusic_disable_browser(request: Request):
-    """Revert YouTube Music to the durable OAuth Data API."""
-    st = _conn(request, "ytmusic").disable_browser()
-    return {"state": st.state, "detail": st.detail}
+def ytmusic_disable_browser(request: Request, account_id: str = ""):
+    """Revert one YouTube Music account to the durable OAuth Data API."""
+    target = _resolve_account_id(request, account_id or "ytmusic")
+    st = _conn(request, target).disable_browser()
+    return {"state": st.state, "detail": st.detail, "account_id": target}
 
 
 @router.post("/api/accounts/spotify/cookie")
 async def spotify_enable_cookie(request: Request, body: dict = Body(...)):
-    """Use a pasted sp_dc as the complete Spotify Web Player connection."""
-    st = _conn(request, "spotify").enable_cookie(body.get("sp_dc", ""))
-    return {"state": st.state, "detail": st.detail}
+    """Use a pasted sp_dc as the complete Spotify Web Player connection for ONE
+    account — named accounts get their own 0600 cookie file, so enabling a
+    second Spotify account never touches the first one's cookie."""
+    account_id = _resolve_account_id(request, body.get("account_id") or "spotify")
+    st = _conn(request, account_id).enable_cookie(body.get("sp_dc", ""))
+    return {"state": st.state, "detail": st.detail, "account_id": account_id}
 
 
 @router.delete("/api/accounts/spotify/cookie")
-def spotify_disable_cookie(request: Request):
-    """Revert Spotify to the OAuth dev app."""
-    st = _conn(request, "spotify").disable_cookie()
-    return {"state": st.state, "detail": st.detail}
+def spotify_disable_cookie(request: Request, account_id: str = ""):
+    """Revert one Spotify account to the OAuth dev app (its cookie file stays
+    on disk so re-enabling needs no re-paste)."""
+    target = _resolve_account_id(request, account_id or "spotify")
+    st = _conn(request, target).disable_cookie()
+    return {"state": st.state, "detail": st.detail, "account_id": target}
 
 
 @router.post("/api/accounts/spotify/isrc-app")
 async def spotify_set_isrc_app(request: Request, body: dict = Body(...)):
     """Store a batch-capable (extended-quota) app for the ISRC /tracks lookup N-way
-    matching needs — a rate bucket separate from the OAuth user token + cookie token."""
-    st = _conn(request, "spotify").set_isrc_app(body.get("client_id", ""), body.get("client_secret", ""))
+    matching needs — a rate bucket separate from the OAuth user token + cookie token.
+    Provider-level add-on: the engine reads it from one shared pool, so it's stored
+    on the default account."""
+    st = _conn(request, "spotify:default").set_isrc_app(body.get("client_id", ""), body.get("client_secret", ""))
     return {"state": st.state, "detail": st.detail}
 
 
 @router.delete("/api/accounts/spotify/isrc-app")
 def spotify_clear_isrc_app(request: Request):
     """Drop the ISRC app (falls back to the OAuth app for /tracks)."""
-    st = _conn(request, "spotify").clear_isrc_app()
+    st = _conn(request, "spotify:default").clear_isrc_app()
     return {"state": st.state, "detail": st.detail}

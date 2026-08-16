@@ -25,7 +25,7 @@ class QobuzConnector(Connector):
     ]
 
     def _raw(self):
-        return self._store.get("QOBUZ_WEB_REQUEST") or os.getenv("QOBUZ_WEB_REQUEST") or ""
+        return self._get("QOBUZ_WEB_REQUEST") or ""
 
     def _credentials(self, raw=None):
         source = raw if raw is not None else self._raw()
@@ -34,11 +34,9 @@ class QobuzConnector(Connector):
         # Preserve the original approved-partner environment configuration as
         # a fallback for existing installations.
         values = {
-            "app_id": self._store.get("QOBUZ_APP_ID") or os.getenv("QOBUZ_APP_ID") or "",
-            "user_auth_token": self._store.get("QOBUZ_USER_AUTH_TOKEN")
-            or os.getenv("QOBUZ_USER_AUTH_TOKEN")
-            or "",
-            "user_id": self._store.get("QOBUZ_USER_ID") or os.getenv("QOBUZ_USER_ID") or "",
+            "app_id": self._get("QOBUZ_APP_ID") or "",
+            "user_auth_token": self._get("QOBUZ_USER_AUTH_TOKEN") or "",
+            "user_id": self._get("QOBUZ_USER_ID") or "",
         }
         return values if all(values.values()) else None
 
@@ -62,7 +60,7 @@ class QobuzConnector(Connector):
         ok, detail = self._validate(credentials)
         if not ok:
             return ConnStatus("error", detail)
-        self._store.save({"QOBUZ_WEB_REQUEST": minimized})
+        self._save({"QOBUZ_WEB_REQUEST": minimized})
         return ConnStatus("connected", detail)
 
     def _validate(self, credentials=None):
@@ -86,4 +84,4 @@ class QobuzConnector(Connector):
             return False, f"could not reach Qobuz ({exc!r})"
 
     def disconnect(self):
-        self._store.save({"QOBUZ_WEB_REQUEST": ""})
+        self._save({"QOBUZ_WEB_REQUEST": ""})

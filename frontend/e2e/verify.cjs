@@ -580,6 +580,31 @@ async function main() {
   server.stdout.on('data', () => {})
   server.stderr.on('data', (d) => console.error('[preview]', d.toString()))
 
+  // Hard watchdog: the suite normally finishes in a few minutes, but a single
+  // hung assertion (an await that never resolves — e.g. a waitForSelector for
+  // text that never appears) would otherwise leave the CI job running until
+  // GitHub's own 6h limit. 30 minutes is far beyond any legitimate runtime;
+  // on fire it tears down the preview server (same process-group kill as the
+  // finally below) and exits non-zero so CI fails loudly instead of hanging.
+  const HARD_TIMEOUT_MS = 30 * 60 * 1000
+  const watchdog = setTimeout(() => {
+    console.error(`\nE2E HUNG — nothing completed for ${HARD_TIMEOUT_MS / 60000} minutes; aborting with a hard failure.`)
+    if (process.platform === 'win32') {
+      if (server.pid) spawn('taskkill', ['/pid', String(server.pid), '/T', '/F'])
+    } else if (server.pid) {
+      try {
+        process.kill(-server.pid, 'SIGKILL')
+      } catch {
+        server.kill('SIGKILL') // group already gone - fall back to the direct child
+      }
+    } else {
+      server.kill('SIGKILL')
+    }
+    process.exit(1)
+  }, HARD_TIMEOUT_MS)
+  // Never keep the node process alive just because the watchdog is pending.
+  if (typeof watchdog.unref === 'function') watchdog.unref()
+
   const results = []
   try {
     await waitForServer(BASE_URL)
@@ -912,7 +937,7 @@ async function main() {
       await page.waitForTimeout(150)
       const afterCount = await dismissButtons().count()
       const afterBadge = await badge().innerText()
-      const goneNow = !(await page.locator('body').innerText()).includes('4 changes held from the last pass')
+      const goneNow = !(await page.locator('body').innerText()).includes('4 changes held from the last run')
       const dismissOk = afterCount === expectedAlertCount - 1 && afterBadge === String(expectedAlertCount - 1) && goneNow
       console.log(`${dismissOk ? 'ok        ' : 'FAIL      '} dismissing a card removes it and updates the count (${afterCount} cards, badge "${afterBadge}", text gone=${goneNow})`)
       if (!dismissOk) results.push({ label: 'needs a look dismiss', overflow: true })
@@ -920,7 +945,7 @@ async function main() {
       await page.reload({ waitUntil: 'networkidle' })
       await page.waitForSelector('h2:has-text("Needs a look")')
       const afterReload = await dismissButtons().count()
-      const stillGone = !(await page.locator('body').innerText()).includes('4 changes held from the last pass')
+      const stillGone = !(await page.locator('body').innerText()).includes('4 changes held from the last run')
       const persistOk = afterReload === expectedAlertCount - 1 && stillGone
       console.log(`${persistOk ? 'ok        ' : 'FAIL      '} the dismissal survives a reload (${afterReload} cards, still gone=${stillGone})`)
       if (!persistOk) results.push({ label: 'needs a look dismiss persistence', overflow: true })
@@ -946,7 +971,7 @@ async function main() {
       await page.reload({ waitUntil: 'networkidle' })
       await page.waitForSelector('h2:has-text("Needs a look")')
       await page.waitForTimeout(150)
-      const resurfaced = (await page.locator('body').innerText()).includes('9 changes held from the last pass')
+      const resurfaced = (await page.locator('body').innerText()).includes('9 changes held from the last run')
       const stored = await page.evaluate(() => window.localStorage.getItem('songmirror-dismissed-alerts'))
       const prunedOk = resurfaced && stored === '[]'
       console.log(`${prunedOk ? 'ok        ' : 'FAIL      '} a changed situation resurfaces and prunes the stale dismissal (resurfaced=${resurfaced}, stored=${stored})`)
@@ -1561,9 +1586,10 @@ async function main() {
       await shot(page, `wizard-step5-limits-review-${width}`)
 
       // Save — the modal closes and the list card reflects the edit
-      // (a real PUT round trip through the in-memory mock store).
+      // (a real PUT round trip through the in-memory mock store). The title
+      // is i18n'd with curly quotes, so match the rendered form exactly.
       await page.getByRole('button', { name: 'Save changes', exact: true }).click()
-      await page.waitForSelector('text=Edit "Default"', { state: 'hidden' })
+      await page.waitForSelector('text=Edit “Default”', { state: 'hidden' })
       const listAfterSaveText = await page.locator('body').innerText()
       const saveRoundTripOk = listAfterSaveText.includes('Spotify ⇄ Apple Music') && listAfterSaveText.includes('every 30m')
       console.log(`${saveRoundTripOk ? 'ok        ' : 'FAIL      '} Saving the wizard updates the list card (PUT round trip)`)
@@ -1599,7 +1625,9 @@ async function main() {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
       })
       let lastBrowserPost = null
-      await page.route('**/api/accounts/ytmusic/browser', async (route) => {
+      // Trailing `*` so the `?account_id=` query the UI now sends (per-account
+      // browser mode) still matches — Playwright globs cover the whole URL.
+      await page.route('**/api/accounts/ytmusic/browser*', async (route) => {
         const method = route.request().method()
         if (method === 'POST') {
           lastBrowserPost = JSON.parse(route.request().postData() || '{}')
@@ -1787,7 +1815,8 @@ async function main() {
       // Toggle "Workout" (starts disabled/paused) on — immediate PUT, no
       // wizard involved.
       const workoutCard = page.locator('h3', { hasText: 'Workout' }).locator('xpath=ancestor::div[contains(@class,"rounded-card")][1]')
-      await workoutCard.getByRole('switch', { name: /Resume "Workout"/, exact: false }).click()
+      // i18n en renders curly quotes (“Workout”) — accept both quote styles.
+      await workoutCard.getByRole('switch', { name: /Resume ["“]Workout["”]/, exact: false }).click()
       await page.waitForSelector('text=every 1h') // "manual only" -> "every 1h" once enabled
       const workoutPausedGone = (await workoutCard.getByText('paused', { exact: true }).count()) === 0
       console.log(`${workoutPausedGone ? 'ok        ' : 'FAIL      '} Toggling a job's switch flips it live (paused badge clears)`)
@@ -3100,6 +3129,7 @@ async function main() {
       await context.close()
     }
 
+    clearTimeout(watchdog)
     await browser.close()
   } finally {
     // `shell: true` spawns the shell -> pnpm -> vite preview as a process
@@ -3126,11 +3156,16 @@ async function main() {
   console.log(`${results.length} checks, ${overflowing.length} with horizontal overflow`)
   if (overflowing.length > 0) {
     console.log(overflowing)
-    process.exitCode = 1
+    // Hard exit: the Playwright browser connection can keep the event loop
+    // alive after a failed suite, which would leave CI stuck instead of red.
+    process.exit(1)
   }
 }
 
 main().catch((err) => {
   console.error(err)
-  process.exitCode = 1
+  // Same guarantee on the error path: whatever threw (a hung assertion, a
+  // crashed browser), the run must END with a non-zero code — the chromium
+  // child process alone must never keep a CI job alive indefinitely.
+  process.exit(1)
 })

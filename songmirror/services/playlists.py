@@ -109,14 +109,17 @@ class PlaylistService:
                      "count": target.playlist_count(pl), "image": pl.get("image") or "",
                      "owned": True} for pl in target.browse_playlists()]
         if ":" in provider_id:
-            if self._database is not None:
-                from .canonical_target import CanonicalAccountTarget
+            # A restored/imported snapshot reads from the canonical database.
+            # Live accounts ALSO have service_accounts rows, so the auth_mode
+            # distinguishes them — a live profile must never be served stale
+            # canonical data instead of the real service.
+            from .canonical_target import CanonicalAccountTarget, is_canonical_account
+            if is_canonical_account(self._database, provider_id):
                 account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
-                if account:
-                    target = CanonicalAccountTarget(self._database, provider_id, account["label"])
-                    return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
-                             "count": target.playlist_count(pl), "image": pl.get("image") or "",
-                             "owned": True} for pl in target.browse_playlists()]
+                target = CanonicalAccountTarget(self._database, provider_id, account["label"])
+                return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
+                         "count": target.playlist_count(pl), "image": pl.get("image") or "",
+                         "owned": True} for pl in target.browse_playlists()]
             # A live multi-account profile: browse with its own config snapshot.
             opts = parse_args([])
             opts.accounts = {provider_id: str(provider_id).split(":", 1)[0]}

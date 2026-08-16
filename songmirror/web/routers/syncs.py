@@ -21,14 +21,18 @@ _FIELDS = {"name", "enabled", "mode", "source", "providers", "accounts", "playli
 def _normalize_accounts(values: dict) -> dict:
     """Derive `accounts` from a legacy `providers` value so jobs saved by an
     older UI keep working: each provider maps to its `{provider}:default`
-    account (the migrated default)."""
+    account (the migrated default). A `providers` entry that is ALREADY an
+    account id (`spotify:work`) is kept as-is — the multi-account UI sends
+    account ids in both fields."""
     if values.get("accounts"):
         return values
     providers = str(values.get("providers") or "")
     if not providers.strip():
         return values
     values = dict(values)
-    values["accounts"] = ",".join(f"{p.strip()}:default" for p in providers.split(",") if p.strip())
+    values["accounts"] = ",".join(
+        item.strip() if ":" in item else f"{item.strip()}:default"
+        for item in providers.split(",") if item.strip())
     return values
 
 

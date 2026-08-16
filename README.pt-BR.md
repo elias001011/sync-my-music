@@ -161,16 +161,24 @@ Já implementado:
   recaps e playlists/biblioteca no banco canônico.
 - Backup e restauração isolados por conta/provedor, sem credenciais; snapshots
   nomeados podem ser usados como origem de transferências.
+- Várias contas ao vivo por serviço, lado a lado: perfis nomeados com
+  credenciais, tokens, cookies e caches isolados; superfícies e pausa por conta;
+  conectar/reconectar, renomear e remover com confirmação; jobs, transferências
+  e navegação de playlists selecionam contas (`account_id`), permitindo por
+  exemplo duas contas Spotify no mesmo sync.
+- Recaps filtráveis por qualquer combinação de contas (card anual, histórico
+  mensal, tops, minutos, plays e breakdown por serviço/conta).
+- Importação ao vivo por conta: puxa as playlists da conta pelo próprio
+  conector para a biblioteca canônica sob o id daquela conta.
 
 Em evolução:
 
 - Adaptadores automáticos de curtidas, artistas seguidos e álbuns salvos para
-  todos os serviços comerciais.
-- Vários perfis de credenciais ao vivo nos jobs agendados; contas de
-  importação/restauração já são isoladas por rótulo.
+  todos os serviços comerciais (hoje: export oficial / Musify / Sonora — a UI
+  marca cada superfície como somente leitura ou não suportada onde não há
+  adapter real).
 - Login e autorização adequados para acesso fora de uma LAN confiável.
 - Mais formatos de importação, ferramentas de conflito e testes de integração.
-- Tradução pt-BR completa da interface web.
 
 Uma matriz honesta do que está completo, parcial ou somente preparado no schema
 fica em [Estado real e fila do produto](docs/plans/product-backlog.pt-BR.md).

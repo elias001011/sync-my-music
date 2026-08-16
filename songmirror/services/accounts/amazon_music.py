@@ -36,22 +36,23 @@ class AmazonMusicConnector(Connector):
     ]
 
     def _raw_headers(self):
-        return self._store.get("AMAZON_MUSIC_WEB_HEADERS") or os.getenv("AMAZON_MUSIC_WEB_HEADERS") or ""
+        return self._get("AMAZON_MUSIC_WEB_HEADERS") or ""
 
     def _renewal_raw(self):
-        return (
-            self._store.get("AMAZON_MUSIC_RENEWAL_REQUEST")
-            or os.getenv("AMAZON_MUSIC_RENEWAL_REQUEST")
-            or ""
-        )
+        return self._get("AMAZON_MUSIC_RENEWAL_REQUEST") or ""
 
     def _web_token_file(self):
+        if self._account_id:
+            return self._config().get("AMAZON_MUSIC_WEB_SESSION_FILE") or token_path(
+                "AMAZON_MUSIC_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE)
         configured = self._store.get("AMAZON_MUSIC_WEB_SESSION_FILE") or os.getenv(
             "AMAZON_MUSIC_WEB_SESSION_FILE"
         )
         return configured or token_path("AMAZON_MUSIC_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE)
 
     def _official_token_file(self):
+        if self._account_id:
+            return self._config().get("AMAZON_MUSIC_TOKEN_FILE") or DEFAULT_TOKEN_FILE
         return (
             os.getenv("AMAZON_MUSIC_TOKEN_FILE")
             or self._store.get("AMAZON_MUSIC_TOKEN_FILE")
@@ -61,9 +62,6 @@ class AmazonMusicConnector(Connector):
     def _official_connected(self):
         configured = self._configured(
             "AMAZON_MUSIC_API_KEY", "AMAZON_MUSIC_CLIENT_ID", "AMAZON_MUSIC_CLIENT_SECRET"
-        ) or all(
-            os.getenv(key)
-            for key in ("AMAZON_MUSIC_API_KEY", "AMAZON_MUSIC_CLIENT_ID", "AMAZON_MUSIC_CLIENT_SECRET")
         )
         if not configured:
             return False
@@ -98,12 +96,12 @@ class AmazonMusicConnector(Connector):
                 updates = {}
                 serialized_headers = client.serialized_headers()
                 serialized_renewal = client.serialized_renewal()
-                if serialized_headers != self._store.get("AMAZON_MUSIC_WEB_HEADERS"):
+                if serialized_headers != self._get("AMAZON_MUSIC_WEB_HEADERS"):
                     updates["AMAZON_MUSIC_WEB_HEADERS"] = serialized_headers
-                if serialized_renewal != self._store.get("AMAZON_MUSIC_RENEWAL_REQUEST"):
+                if serialized_renewal != self._get("AMAZON_MUSIC_RENEWAL_REQUEST"):
                     updates["AMAZON_MUSIC_RENEWAL_REQUEST"] = serialized_renewal
                 if updates:
-                    self._store.save(updates)
+                    self._save(updates)
             return ConnStatus("connected", detail) if ok else ConnStatus("expired", detail)
         if self._raw_headers():
             return ConnStatus(
@@ -133,7 +131,7 @@ class AmazonMusicConnector(Connector):
         if client is not None:
             minimized = client.serialized_headers()
             renewal = client.serialized_renewal()
-        self._store.save(
+        self._save(
             {
                 "AMAZON_MUSIC_WEB_HEADERS": minimized,
                 "AMAZON_MUSIC_RENEWAL_REQUEST": renewal,
@@ -142,7 +140,7 @@ class AmazonMusicConnector(Connector):
         return ConnStatus("connected", detail)
 
     def disconnect(self):
-        self._store.save(
+        self._save(
             {"AMAZON_MUSIC_WEB_HEADERS": "", "AMAZON_MUSIC_RENEWAL_REQUEST": ""}
         )
         write_token(self._web_token_file(), {})

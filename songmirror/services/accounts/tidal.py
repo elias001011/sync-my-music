@@ -27,13 +27,15 @@ class TidalConnector(Connector):
     ]
 
     def _raw(self):
-        return self._store.get("TIDAL_WEB_HEADERS") or os.getenv("TIDAL_WEB_HEADERS") or ""
+        return self._get("TIDAL_WEB_HEADERS") or ""
 
     def _official_token_file(self):
+        if self._account_id:
+            return self._config().get("TIDAL_TOKEN_FILE") or DEFAULT_TOKEN_FILE
         return os.getenv("TIDAL_TOKEN_FILE") or self._store.get("TIDAL_TOKEN_FILE") or DEFAULT_TOKEN_FILE
 
     def _official_connected(self):
-        client_id = self._store.get("TIDAL_CLIENT_ID") or os.getenv("TIDAL_CLIENT_ID")
+        client_id = self._get("TIDAL_CLIENT_ID")
         token = read_token(self._official_token_file())
         return bool(client_id and (token.get("access_token") or token.get("refresh_token")))
 
@@ -74,8 +76,8 @@ class TidalConnector(Connector):
         ok, detail = self._validate(minimized)
         if not ok:
             return ConnStatus("error", detail)
-        self._store.save({"TIDAL_WEB_HEADERS": minimized, "TIDAL_COUNTRY_CODE": country})
+        self._save({"TIDAL_WEB_HEADERS": minimized, "TIDAL_COUNTRY_CODE": country})
         return ConnStatus("connected", detail)
 
     def disconnect(self):
-        self._store.save({"TIDAL_WEB_HEADERS": ""})
+        self._save({"TIDAL_WEB_HEADERS": ""})

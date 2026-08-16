@@ -8,8 +8,10 @@ import type { Account, AuthKind, SurfaceName } from '@/types'
 import { Button } from '../ui/Button'
 import { Card } from '../ui/Card'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
+import { Modal } from '../ui/Modal'
 import { ServiceLogo } from '../ui/ServiceLogo'
 import { StatusPill } from '../ui/StatusPill'
+import { TextField } from '../ui/TextField'
 import { Toggle } from '../ui/Toggle'
 import { ConnectWizardModal } from './ConnectWizardModal'
 
@@ -60,11 +62,27 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
   const [wizardOpen, setWizardOpen] = useState(false)
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState(account.name)
+  const [renaming, setRenaming] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [addValue, setAddValue] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const isConnected = account.state === 'connected' || account.state === 'expired'
   const visualProvider = account.provider ?? account.id
   const logoId = serviceLogoId(visualProvider)
+  // The stable account id: `spotify:default` or `spotify:work` (named).
+  const accountId = account.account_id ?? (account.id.includes(':') ? account.id : `${account.id}:default`)
+  // `:default` profiles are the migration anchor — they can be disconnected but
+  // never removed; adding another account happens from the default's card.
+  const isDefault = accountId.endsWith(':default')
+  const isLive = account.live !== false && !account.local_snapshot
 
   async function disconnect() {
     setDisconnecting(true)
@@ -77,6 +95,34 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
       setError(errorMessage(err))
     } finally {
       setDisconnecting(false)
+    }
+  }
+
+  async function remove() {
+    setRemoving(true)
+    setError(null)
+    try {
+      await api.removeAccount(account.id)
+      setConfirmingRemove(false)
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRemoving(false)
+    }
+  }
+
+  async function rename() {
+    setRenaming(true)
+    setError(null)
+    try {
+      await api.setAccountPrefs(account.id, { label: renameValue.trim() })
+      setRenameOpen(false)
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRenaming(false)
     }
   }
 
@@ -103,6 +149,36 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
     }
   }
 
+  async function addAccount() {
+    setAdding(true)
+    setError(null)
+    try {
+      await api.createAccount(visualProvider, addValue.trim())
+      setAddOpen(false)
+      setAddValue('')
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function importToLibrary() {
+    setImporting(true)
+    setError(null)
+    setImportResult(null)
+    try {
+      const res = await api.importLiveAccount(accountId)
+      setImportResult(`Imported ${res.playlists} playlists · ${res.playlist_tracks} tracks.`)
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setImporting(false)
+    }
+  }
+
   return (
     <Card className={cn('flex flex-col gap-3.5 p-4 sm:p-5', borderClass(account.state))}>
       <div className="flex flex-wrap items-center gap-2.5">
@@ -116,8 +192,15 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         ) : (
           <span className={cn('size-2.5 shrink-0 rounded-full', tagDot(visualProvider))} aria-hidden="true" />
         )}
-        <h3 className="text-base font-bold text-text">{account.name}</h3>
-        <span className="font-mono text-[10px] tracking-wide text-text-3">{account.local_snapshot ? 'LOCAL BACKUP' : AUTH_KIND_LABELS[account.auth_kind]}</span>
+        <div className="min-w-0">
+          <h3 className="text-base font-bold text-text">{account.name}</h3>
+          {isLive && (
+            <span className="font-mono text-[10px] tracking-wide text-text-3">{accountId}</span>
+          )}
+        </div>
+        <span className="font-mono text-[10px] tracking-wide text-text-3">
+          {account.local_snapshot ? 'LOCAL SNAPSHOT' : isLive && !isDefault ? 'LIVE ACCOUNT' : AUTH_KIND_LABELS[account.auth_kind]}
+        </span>
         <StatusPill state={account.state} className="ml-auto" />
       </div>
 
@@ -143,6 +226,7 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         </div>
       )}
 
+      {importResult && <p className="text-xs text-success">{importResult}</p>}
       {error && <p className="text-xs text-danger">{error}</p>}
 
       {surfaceCaps && !account.local_snapshot && (
@@ -176,19 +260,41 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         </div>
       )}
 
-      {!account.local_snapshot && <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        <Button variant={isConnected ? 'secondary' : 'primary'} size="sm" onClick={() => setWizardOpen(true)}>
-          {isConnected ? 'Reconnect' : 'Connect'}
-        </Button>
-        {isConnected && (
-          <Button variant="ghost" size="sm" onClick={() => setConfirmingDisconnect(true)}>
-            Disconnect
+      {isLive && (
+        <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <Button variant={isConnected ? 'secondary' : 'primary'} size="sm" onClick={() => setWizardOpen(true)}>
+            {isConnected ? 'Reconnect' : 'Connect'}
           </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={() => void toggleEnabled()}>
-          {account.enabled === false ? 'Enable connector' : 'Pause connector'}
-        </Button>
-      </div>}
+          {isConnected && (
+            <Button variant="ghost" size="sm" onClick={() => setConfirmingDisconnect(true)}>
+              Disconnect
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => void toggleEnabled()}>
+            {account.enabled === false ? 'Enable' : 'Pause'}
+          </Button>
+          {!isDefault && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => { setRenameValue(account.name); setRenameOpen(true) }}>
+                Rename
+              </Button>
+              <Button variant="ghost" size="sm" className="text-danger hover:bg-danger-soft/50" onClick={() => setConfirmingRemove(true)}>
+                Remove
+              </Button>
+            </>
+          )}
+          {!isDefault && account.state === 'connected' && (
+            <Button variant="ghost" size="sm" onClick={() => void importToLibrary()} loading={importing} className="ml-auto">
+              Import playlists
+            </Button>
+          )}
+          {isDefault && (
+            <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
+              + Add account
+            </Button>
+          )}
+        </div>
+      )}
 
       {!account.local_snapshot && <ConnectWizardModal
         account={account}
@@ -211,6 +317,68 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
         onConfirm={() => void disconnect()}
         onCancel={() => setConfirmingDisconnect(false)}
       />}
+
+      {!account.local_snapshot && <ConfirmDialog
+        open={confirmingRemove}
+        title={`Remove ${account.name}?`}
+        description={`This permanently removes the ${accountId} profile: its credentials, token/cookie files and its imported library rows. Jobs and links that reference it will skip it. This can't be undone.`}
+        confirmLabel="Remove account"
+        danger
+        loading={removing}
+        onConfirm={() => void remove()}
+        onCancel={() => setConfirmingRemove(false)}
+      />}
+
+      {isLive && !isDefault && (
+        <Modal open={renameOpen} onClose={() => setRenameOpen(false)} title={`Rename ${account.name}`}
+          description="The account id stays stable — jobs and links keep pointing at this account.">
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (renameValue.trim()) void rename()
+            }}
+          >
+            <TextField
+              label="Account name"
+              required
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setRenameOpen(false)}>Cancel</Button>
+              <Button type="submit" loading={renaming} disabled={!renameValue.trim()}>Save</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {isLive && isDefault && (
+        <Modal open={addOpen} onClose={() => setAddOpen(false)} title={`Add a ${account.name} account`}
+          description="A second profile with its own credentials, tokens and caches — connect it separately after creating it.">
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (addValue.trim()) void addAccount()
+            }}
+          >
+            <TextField
+              label="Account name"
+              placeholder="e.g. Work, Family, Second profile"
+              required
+              autoFocus
+              value={addValue}
+              onChange={(e) => setAddValue(e.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button>
+              <Button type="submit" loading={adding} disabled={!addValue.trim()}>Create account</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </Card>
   )
 }

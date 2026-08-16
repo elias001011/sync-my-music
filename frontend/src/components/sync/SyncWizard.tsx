@@ -57,12 +57,16 @@ const NEW_JOB_DEFAULTS: JobFormState = {
 
 function formFromJob(job: SyncJob | null): JobFormState {
   if (!job) return NEW_JOB_DEFAULTS
+  // `accounts` is the per-account participant list (account ids); `providers`
+  // mirrors it for legacy consumers. Prefer the persisted accounts so a
+  // named-account job round-trips exactly.
+  const participants = job.accounts || job.providers
   return {
     name: job.name,
     enabled: job.enabled,
     mode: job.mode,
     source: job.source,
-    providers: job.providers,
+    providers: participants,
     playlists: job.playlists,
     interval: job.interval,
     max_adds: String(job.max_adds),
@@ -344,6 +348,7 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
     mode: form.mode,
     source: form.source,
     providers: form.providers,
+    accounts: form.providers,
     playlists: form.playlists,
     interval: form.interval,
     max_adds: Number(form.max_adds) || 0,
@@ -364,6 +369,9 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
         mode: form.mode,
         source: form.source,
         providers: form.providers,
+        // The participants as stable account ids — the engine runs exactly
+        // these accounts (two of the same provider allowed).
+        accounts: form.providers,
         playlists: form.playlists,
         interval: form.interval,
         max_adds: Number(form.max_adds),

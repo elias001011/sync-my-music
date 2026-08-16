@@ -2,6 +2,32 @@
 
 from pathlib import Path
 
+# Auth modes that mark a LOCAL read-only snapshot (restored backup / official
+# export / history import / hive), as opposed to a live connected account.
+# Live accounts — including `:default` profiles and named multi-account
+# profiles — also appear in the canonical database (service_accounts), so the
+# auth_mode is what tells the two apart. Centralized here so PlaylistService
+# and TransferService can never disagree.
+CANONICAL_AUTH_MODES = {"official-export", "sync-account-restore", "hive-backup",
+                        "aggregate-import", "history-import"}
+
+
+def is_canonical_account(database, account_id: str) -> bool:
+    """Whether `account_id` refers to a restored/imported local snapshot
+    (read-only source) rather than a live account. Live accounts — including
+    `:default` profiles and named multi-account profiles — build real engine
+    targets. Musify's hive snapshot is always canonical."""
+    if database is None:
+        return False
+    if account_id == "musify" or account_id.startswith("musify:"):
+        return True
+    if ":" not in account_id:
+        return False
+    row = next((r for r in database.accounts() if r["id"] == account_id), None)
+    if not row:
+        return False
+    return str(row.get("auth_mode") or "") in CANONICAL_AUTH_MODES
+
 from ..engine.targets.base import MirrorTarget
 
 

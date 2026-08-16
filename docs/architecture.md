@@ -13,6 +13,44 @@ capabilities such as library read, playlist read, playlist create and playlist
 write. The UI only offers valid destinations, and a connector can be paused
 without deleting its imported data.
 
+## Multi-account live profiles
+
+Every credential profile lives in the settings registry under a stable
+`{provider}:{account}` id — `spotify:default` (the migrated legacy single
+account) plus any named profiles the user creates (`spotify:work`). Each
+profile carries its own label, enabled flag, surface toggles and config
+namespace, so two accounts of the SAME provider can run side by side:
+
+- Connectors are instantiated per account and read/write ONLY that account's
+  namespace; a named account never inherits the default's credentials from
+  `os.environ` and never overwrites the default's token/cookie files.
+- Session/token files are materialized per account in the config snapshot
+  (`data/{provider}-{hash}_*.json`), including the Spotify `sp_dc` cookie
+  (`spotify_sp_dc.<slug>.private`, 0600) and the OAuth token caches.
+- Engine targets receive their config directly (`Options.account_configs`);
+  nothing is swapped into `os.environ`, so concurrent accounts can't leak.
+- Archive state and resolution caches are namespaced by `state_key` — the bare
+  provider for `:default` (byte-identical legacy keys), the account id for
+  named profiles. N-way reconcile keys playlist dirs, caches and baselines by
+  `state_key`, so two Spotify accounts never collide.
+- Jobs store `accounts` (account ids) and `source` (an account id when the
+  one-way source is a specific profile). Legacy jobs keep working: bare
+  provider ids resolve to their `:default` accounts.
+
+Live accounts vs read-only snapshots are classified once, by auth mode
+(`canonical_target.is_canonical_account`): `official-export`,
+`sync-account-restore`, `hive-backup`, `aggregate-import` and `history-import`
+are local snapshots (read-only transfer sources); anything else — including
+`:default` and named profiles — is a live account that builds a real provider
+target. PlaylistService, TransferService and the Accounts list share this
+single classifier.
+
+A live account's playlists can be pulled into the canonical database
+(`POST /api/library/accounts/{account_id}/import`, gated by the account's
+`playlists` surface toggle): the read goes through the account's own target and
+replaces that account's previous canonical snapshot (versioned before
+replacement), keeping entity dedup across accounts intact.
+
 ## Synchronization surfaces
 
 The intended surfaces are independent:
@@ -50,15 +88,18 @@ tracks, playlists, surfaces, or provider identities.
 ## Whole-application backups
 
 The Settings page exports a versioned ZIP containing a consistent SQLite
-snapshot plus configuration, jobs, links, and local connector state. Every file
-has a SHA-256 digest in the manifest. Restore validates archive paths, size,
-hashes, and SQLite integrity, runs through the same exclusive queue as syncs,
-and keeps the latest three pre-restore recovery copies.
+snapshot plus configuration (including the account registry with per-account
+configs, surfaces and enabled flags), jobs (with `accounts`), links, and local
+connector state. Every file has a SHA-256 digest in the manifest. Restore
+validates archive paths, size, hashes, and SQLite integrity, runs through the
+same exclusive queue as syncs, and keeps the latest three pre-restore recovery
+copies.
 
 Exports are not encrypted and can contain credentials. Spotify's `sp_dc` web
-session cookie is therefore always excluded and Web/cookie mode is reset to
-OAuth in the portable backup. Restore the ZIP only on a trusted machine and
-re-enable cookie mode explicitly afterward.
+session cookie — the default file and every per-account variant — is therefore
+always excluded and Web/cookie mode is reset to OAuth in the portable backup.
+Restore the ZIP only on a trusted machine and re-enable cookie mode explicitly
+afterward.
 
 The Library also exposes smaller `sync-account-backup` archives. They contain
 one provider account's canonical tracks, playlists, surfaces and recap rows but

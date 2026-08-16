@@ -284,6 +284,12 @@ const REDIRECT_POLL_INTERVAL_MS = 2500
 const REDIRECT_POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 export function ConnectWizardModal({ account, open, onClose, onConnected, onChanged }: Props) {
+  // The stable account id this wizard manages (`spotify:default` or a named
+  // profile) — every auth call below targets it and only it.
+  const accountId = account.account_id ?? (account.id.includes(':') ? account.id : `${account.id}:default`)
+  const isDefaultAccount = !accountId.includes(':') || accountId.endsWith(':default')
+  // The provider family (`spotify` / `ytmusic`) regardless of the profile form.
+  const providerId = account.provider ?? account.id.split(':')[0]
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -512,16 +518,23 @@ export function ConnectWizardModal({ account, open, onClose, onConnected, onChan
               </>
             )}
 
-            {account.id === 'ytmusic' && <NoQuotaModeSection account={account} onChanged={onChanged} />}
-            {account.id === 'spotify' && (
+            {providerId === 'ytmusic' && <NoQuotaModeSection account={account} onChanged={onChanged} />}
+            {providerId === 'spotify' && (
               <p className="rounded-control border border-border bg-inset px-3 py-2.5 text-xs leading-relaxed text-text-3">
                 <strong className="text-text-2">Choose one connection mode:</strong> OAuth official, or{' '}
-                <strong>Web/cookie</strong> without a developer app. An optional <strong>ISRC lookup app</strong> improves
-                exact cross-service matching during large bidirectional syncs.
+                <strong>Web/cookie</strong> without a developer app.
+                {isDefaultAccount && (
+                  <>
+                    {' '}An optional <strong>ISRC lookup app</strong> improves exact cross-service matching during
+                    large bidirectional syncs.
+                  </>
+                )}
               </p>
             )}
-            {account.id === 'spotify' && <CookieWriteSection account={account} onChanged={onChanged} />}
-            {account.id === 'spotify' && <IsrcAppSection account={account} onChanged={onChanged} />}
+            {providerId === 'spotify' && <CookieWriteSection account={account} onChanged={onChanged} />}
+            {/* The ISRC lookup app is a provider-level add-on (one shared pool in
+                the engine) — it's only offered on the default account. */}
+            {providerId === 'spotify' && isDefaultAccount && <IsrcAppSection account={account} onChanged={onChanged} />}
           </>
         )}
       </div>
@@ -728,6 +741,7 @@ function HeaderPasteBox({ fields, onFilled }: { fields: AccountField[]; onFilled
  * than replacing it. Collapsed by default, matching HeaderPasteBox: it's an
  * optional enhancement, not required to connect. */
 function NoQuotaModeSection({ account, onChanged }: { account: Account; onChanged: () => void }) {
+  const accountId = account.account_id ?? (account.id.includes(':') ? account.id : `${account.id}:default`)
   const active = account.detail === YTMUSIC_BROWSER_MODE_DETAIL
   const [headers, setHeaders] = useState('')
   const [saving, setSaving] = useState(false)
@@ -744,7 +758,7 @@ function NoQuotaModeSection({ account, onChanged }: { account: Account; onChange
     setSaving(true)
     setError(null)
     try {
-      const res = await api.enableYtmusicBrowserMode(headers)
+      const res = await api.enableYtmusicBrowserMode(headers, accountId)
       if (res.state === 'connected') onChanged()
       else setError(res.detail || 'Could not enable no-quota mode with those headers.')
     } catch (err) {
@@ -758,7 +772,7 @@ function NoQuotaModeSection({ account, onChanged }: { account: Account; onChange
     setSaving(true)
     setError(null)
     try {
-      await api.disableYtmusicBrowserMode()
+      await api.disableYtmusicBrowserMode(accountId)
       onChanged()
     } catch (err) {
       setError(errorMessage(err))
@@ -845,6 +859,7 @@ function NoQuotaModeSection({ account, onChanged }: { account: Account; onChange
 
 /** Spotify Web/cookie mode: a complete first-party web-player connection. */
 function CookieWriteSection({ account, onChanged }: { account: Account; onChanged: () => void }) {
+  const accountId = account.account_id ?? (account.id.includes(':') ? account.id : `${account.id}:default`)
   const active = (account.detail || '').includes('Web/cookie')
   const [spDc, setSpDc] = useState('')
   const [saving, setSaving] = useState(false)
@@ -859,7 +874,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
     setSaving(true)
     setError(null)
     try {
-      const res = await api.enableSpotifyCookieMode(spDc)
+      const res = await api.enableSpotifyCookieMode(spDc, accountId)
       if (res.state === 'connected') onChanged()
       else setError(res.detail || 'Could not enable Web/cookie mode with that cookie.')
     } catch (err) {
@@ -873,7 +888,7 @@ function CookieWriteSection({ account, onChanged }: { account: Account; onChange
     setSaving(true)
     setError(null)
     try {
-      await api.disableSpotifyCookieMode()
+      await api.disableSpotifyCookieMode(accountId)
       onChanged()
     } catch (err) {
       setError(errorMessage(err))
