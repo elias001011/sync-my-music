@@ -104,3 +104,36 @@ def test_topic_channel_reads_as_the_plain_artist():
     a, b = t.playlist_tracks({"playlistId": "p1"})
     assert a["artist"] == b["artist"] == "The Cranberries"
     assert a["artists"] == b["artists"] == ["The Cranberries"]
+
+
+def test_engine_default_auth_file_matches_the_connector(monkeypatch, tmp_path):
+    """The engine must resolve the OAuth token from the SAME file the connector
+    writes. Before the fix the connector saved `data/ytmusic_oauth.json` while
+    the engine defaulted to the bare `ytmusic_oauth.json` — a fresh connect
+    reported "token present" but every sync/import said "no live connection"
+    (the two sides resolved different files)."""
+    import json
+    import os
+
+    from songmirror.engine.targets.ytmusic import DEFAULT_AUTH_FILE, build
+    from songmirror.services.accounts.ytmusic import YTMusicConnector
+    from songmirror.services.settings import SettingsStore
+
+    monkeypatch.delenv("YTMUSIC_AUTH_FILE", raising=False)
+    monkeypatch.delenv("YTMUSIC_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("YTMUSIC_OAUTH_CLIENT_SECRET", raising=False)
+    store = SettingsStore(dir=tmp_path)
+
+    # The connector's default file IS the engine's default file — one path.
+    connector = YTMusicConnector(store, account_id="ytmusic:default")
+    assert connector._auth_file() == DEFAULT_AUTH_FILE == "data/ytmusic_oauth.json"
+
+    # With a token at that path and app credentials in the config, the engine
+    # builds a real target instead of skipping with "no OAuth token".
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("data", exist_ok=True)
+    with open(DEFAULT_AUTH_FILE, "w") as f:
+        json.dump({"access_token": "a", "refresh_token": "r", "expires_at": 1}, f)
+    target = build({"YTMUSIC_OAUTH_CLIENT_ID": "cid", "YTMUSIC_OAUTH_CLIENT_SECRET": "sec"})
+    assert target is not None
+    assert target._auth_file == DEFAULT_AUTH_FILE

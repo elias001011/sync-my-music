@@ -33,7 +33,12 @@ from ..matching import normalize_text, romanized, score_candidate, track_key
 from .base import MirrorTarget, TargetAuthError
 from .provider_utils import source_playlist_details
 
-DEFAULT_AUTH_FILE = "ytmusic_oauth.json"
+# Must match the connector's default (services/accounts/ytmusic.py) and the
+# CLI hint below: the token the connector writes after the device-flow auth is
+# read by every sync/import from this exact path. A bare "ytmusic_oauth.json"
+# here made a fresh connect report "token present" while the engine said "no
+# live connection" — the two sides resolved different files.
+DEFAULT_AUTH_FILE = "data/ytmusic_oauth.json"
 API = "https://www.googleapis.com/youtube/v3"
 
 _TOPIC_RE = re.compile(r"\s*-\s*Topic$")
