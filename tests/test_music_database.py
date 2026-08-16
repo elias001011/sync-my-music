@@ -348,3 +348,27 @@ def test_sonora_export_dedupes_video_ids_within_playlists(tmp_path):
     # would otherwise 500 on the second INSERT.
     assert sorted(e["videoId"] for e in entries) == ["vidAAAA", "vidBBBB"]
     assert [e["position"] for e in entries] == [1, 2]
+
+
+def test_sonora_export_synthesizes_thumbnails_for_youtube_ids(tmp_path):
+    """Sonora is a YouTube Music client — it shows cover art from the video
+    thumbnail. The canonical store keeps no artwork for most rows, so the
+    export derives the i.ytimg.com URL for real YouTube ids and leaves
+    None for ids that are not YouTube-shaped (e.g. Spotify track ids)."""
+    db = MusicDatabase(tmp_path / "music.db")
+    db.import_provider_library(
+        "ytmusic", "ytmusic:default", "YT Music",
+        playlists=[{"provider_id": "p1", "name": "Road", "tracks": [
+            {"provider_track_id": "dQw4w9WgXcQ", "track_name": "A", "artist_name": "Art", "duration_ms": 180000},
+            {"provider_track_id": "003vvx7Niy0yvhvHt4a6", "track_name": "B", "artist_name": "Art", "duration_ms": 200000},
+        ]}])
+    adapter = SonoraAdapter(db)
+    entries = adapter.export_backup()["playlistEntries"]["1"]
+    by_id = {e["videoId"]: e for e in entries}
+    assert by_id["dQw4w9WgXcQ"]["thumbnailUrl"] == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    assert by_id["003vvx7Niy0yvhvHt4a6"]["thumbnailUrl"] is None
+    # liked songs surface derives the same way.
+    adapter.import_backup({"likedSongs": [{"videoId": "dQw4w9WgXcQ", "title": "A",
+                                           "artist": "Art", "addedAt": "2026-07-01T00:00:00Z"}]})
+    liked = adapter.export_backup()["likedSongs"]
+    assert liked and liked[0]["thumbnailUrl"] == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"

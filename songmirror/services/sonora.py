@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import socket
 import threading
 import time
@@ -233,7 +234,8 @@ class SonoraAdapter:
                         seen_video.add(video_id)
                         entries.append({
                             "playlistId": index, "videoId": video_id, "position": len(entries) + 1,
-                            "title": row["title"], "artist": row["artist"], "thumbnailUrl": None,
+                            "title": row["title"], "artist": row["artist"],
+                            "thumbnailUrl": self._thumbnail(video_id),
                             "duration": int((row["duration_ms"] or 0) / 1000) or None,
                             "isVideo": False, "isExplicit": False,
                         })
@@ -249,9 +251,9 @@ class SonoraAdapter:
                        GROUP BY t.id ORDER BY played_at DESC LIMIT 500""").fetchall()
                 out["history"] = [
                     {"videoId": r["video_id"], "title": r["title"], "artist": r["artist"],
-                     "thumbnailUrl": None, "playedAt": self._iso(r["played_at"]), "playCount": r["play_count"],
-                     "duration": int((r["duration_ms"] or 0) / 1000) or None, "isVideo": False,
-                     "isExplicit": False} for r in rows if r["video_id"]
+                     "thumbnailUrl": self._thumbnail(r["video_id"]), "playedAt": self._iso(r["played_at"]),
+                     "playCount": r["play_count"], "duration": int((r["duration_ms"] or 0) / 1000) or None,
+                     "isVideo": False, "isExplicit": False} for r in rows if r["video_id"]
                 ]
         out["searchHistory"] = []
         out["settings"] = None
@@ -302,7 +304,7 @@ class SonoraAdapter:
                 "videoId": video_id,
                 "title": str(meta.get("title") or meta.get("track_name") or "Unknown song"),
                 "artist": str(meta.get("artist") or meta.get("artist_name") or "Unknown artist"),
-                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image"),
+                "thumbnailUrl": meta.get("thumbnailUrl") or meta.get("image") or SonoraAdapter._thumbnail(video_id),
                 "artistId": meta.get("artistId"),
                 "albumId": meta.get("albumId"),
                 "addedAt": added_at,
@@ -346,6 +348,17 @@ class SonoraAdapter:
                 "videoCount": meta.get("videoCount") or (len(items) if isinstance(items, list) else None),
                 "addedAt": added_at,
             }
+        return None
+
+    @staticmethod
+    def _thumbnail(video_id: str) -> str | None:
+        """Sonora is a YouTube Music client: it shows cover art from the
+        video's thumbnail, and the canonical store keeps no artwork for
+        most rows. For a real YouTube id the thumbnail URL is derivable
+        without any API call (a 404 would return a placeholder, never a
+        dead link), so derive it instead of sending None."""
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id or ""):
+            return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
         return None
 
     @staticmethod
