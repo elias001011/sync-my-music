@@ -19,20 +19,29 @@ _FIELDS = {"name", "enabled", "mode", "source", "providers", "accounts", "playli
 
 
 def _normalize_accounts(values: dict) -> dict:
-    """Derive `accounts` from a legacy `providers` value so jobs saved by an
-    older UI keep working: each provider maps to its `{provider}:default`
-    account (the migrated default). A `providers` entry that is ALREADY an
-    account id (`spotify:work`) is kept as-is — the multi-account UI sends
-    account ids in both fields."""
-    if values.get("accounts"):
-        return values
+    """Every account id becomes its stable `{provider}:default` form (a bare
+    `spotify` -> `spotify:default`; `spotify:work` stays). `accounts` is derived
+    from a legacy `providers` value when absent. A bare `source` that names a
+    participating account is promoted to that account id — so a new job with
+    `source="spotify"` and `spotify:default` participating stores
+    `source="spotify:default"` and the engine treats them as one account."""
     providers = str(values.get("providers") or "")
-    if not providers.strip():
+    accounts = str(values.get("accounts") or "").strip()
+    if not accounts and providers.strip():
+        accounts = ",".join(
+            item.strip() if ":" in item else f"{item.strip()}:default"
+            for item in providers.split(",") if item.strip())
+    if not accounts.strip():
         return values
     values = dict(values)
     values["accounts"] = ",".join(
         item.strip() if ":" in item else f"{item.strip()}:default"
-        for item in providers.split(",") if item.strip())
+        for item in accounts.split(",") if item.strip())
+    source = str(values.get("source") or "").strip()
+    if source and ":" not in source:
+        participating = {item.strip() for item in values["accounts"].split(",") if item.strip()}
+        if f"{source}:default" in participating:
+            values["source"] = f"{source}:default"
     return values
 
 

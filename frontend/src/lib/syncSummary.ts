@@ -11,6 +11,21 @@ export function joinCsv(values: string[]): string {
   return values.join(',')
 }
 
+/** The stable value a job stores for one account: the backend's `account_id`
+ * (`spotify:default`, `spotify:work`). The public `id` keeps the legacy bare
+ * form (`spotify`) for old UIs, so job payloads must never use it as a value.
+ * Falls back to `id` when the backend didn't send `account_id` (fixtures,
+ * snapshot entries). */
+export function accountStableId(account: Account): string {
+  return account.account_id || account.id
+}
+
+/** Whether an id refers to `account`: its stable account id, or — for legacy
+ * jobs saved with a bare `source="spotify"` — the public id. */
+export function accountMatches(account: Account, id: string): boolean {
+  return accountStableId(account) === id || account.id === id
+}
+
 /** The sync/transfer peers among `accounts`, in their original order. Keyed off
  * the backend's `transferable` flag (its targets registry is the single source
  * of truth), so browse-only services like Jellyfin — a connected account that
@@ -31,7 +46,7 @@ export function lockedSourceOf(job: Pick<SyncJob, 'mode' | 'source'>): string | 
  * providers. The new-job wizard materializes its initial selection instead. */
 export function enabledProvidersOf(job: Pick<SyncJob, 'providers'>, peers: Account[]): Set<string> {
   const explicit = parseCsv(job.providers)
-  return new Set(explicit.filter((id) => peers.some((peer) => peer.id === id)))
+  return new Set(explicit.filter((id) => peers.some((peer) => accountMatches(peer, id))))
 }
 
 export interface SyncSummaryRow {
@@ -53,13 +68,16 @@ export function buildSyncSummaryRows(job: SyncJob, peers: Account[], downloadDir
 
   const enabled = enabledProvidersOf(job, peers)
   const lockedId = lockedSourceOf(job)
-  const enabledNames = peers.filter((a) => a.id === lockedId || enabled.has(a.id)).map((a) => a.name)
+  const enabledNames = peers
+    .filter((a) => (lockedId ? accountMatches(a, lockedId) : false) || enabled.has(accountStableId(a)))
+    .map((a) => a.name)
   if (job.mode === 'nway') {
     // No single source in N-way — just list who's included.
     const who = enabledNames.length > 0 ? enabledNames.join(' ⇄ ') : 'no services selected'
     rows.push({ label: 'Direction', value: `Bidirectional (N-way) · ${who}` })
   } else {
-    const sourceName = peers.find((a) => a.id === (job.source || 'spotify'))?.name ?? 'Spotify'
+    const sourceName =
+      peers.find((a) => accountMatches(a, job.source || 'spotify'))?.name ?? 'Spotify'
     const others = enabledNames.filter((n) => n !== sourceName)
     const who = others.length > 0 ? `${sourceName} → ${others.join(', ')}` : `${sourceName} only`
     rows.push({ label: 'Direction', value: `One-way · ${who}` })

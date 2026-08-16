@@ -147,9 +147,15 @@ def build_targets(opts, sp=None):
     disabled = _disabled()
     out = []
     for account_id, src in _participants(opts):
-        # Skip the source itself: by account id (multi-account) or by provider
-        # (legacy provider-only source).
-        if src in disabled or account_id == source or (":" not in str(source) and src == source):
+        if src in disabled or account_id == source:
+            continue
+        # Legacy bare source (`spotify`) names the PROVIDER, not one account: it
+        # skips only that provider's `:default` account (the migrated single
+        # connection). A named account of the same provider (`spotify:work`) is
+        # a different live profile and stays a valid target — the whole point
+        # of the multi-account model. Normalized jobs store `spotify:default`
+        # and are covered by the `account_id == source` clause above.
+        if ":" not in str(source) and src == source and str(account_id).endswith(":default"):
             continue
         builder = _REGISTRY.get(src)
         if builder is None:

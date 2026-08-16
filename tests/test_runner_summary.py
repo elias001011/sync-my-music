@@ -99,6 +99,95 @@ def test_nway_wraps_accumulated_summary(monkeypatch):
     assert s["per_target"][0]["skipped"] == 0  # defaulted keys always present
 
 
+def test_account_scoped_nway_never_mints_env_client(monkeypatch):
+    # An N-way job whose participants are named accounts (wizard keeps the
+    # default `source='spotify'` for N-way — there is no single source of
+    # truth) must NOT touch the legacy env-credential client: every account
+    # target mints its own client from its own config. Before the fix this
+    # raised "Missing required environment variable: SPOTIFY_CLIENT_ID" and
+    # killed the entire pass.
+    def unexpected_spotify(*args, **kwargs):
+        raise AssertionError("legacy env client must not be built for an account-scoped pass")
+
+    seen = {}
+
+    class Source:
+        source, name = "spotify", "Spotify"
+        state_key = "spotify:work"
+
+        def list_playlists(self):
+            return {}
+
+    def fake_build_one(provider_id, opts, sp=None):
+        seen["source"] = provider_id
+        seen["sp"] = sp
+        return Source()
+
+    def fake_nway(opts, sp, selected, songs, should_continue=None):
+        seen["nway_sp"] = sp
+        return [runner._summary_entry("N-way", {"added": 0})]
+
+    monkeypatch.setattr(runner.spotify, "client", unexpected_spotify)
+    monkeypatch.setattr(runner.archive, "connect", lambda f: _FakeSongs())
+    monkeypatch.setattr(runner, "build_one", fake_build_one)
+    monkeypatch.setattr(runner, "_run_nway", fake_nway)
+    monkeypatch.setattr(runner, "_post_sync", lambda *a, **k: None)
+
+    s = runner.run_pass(_opts(sync_mode="nway",
+                              accounts={"spotify:work": "spotify", "ytmusic:default": "ytmusic"}))
+
+    assert s["ok"] is True
+    # Playlist enumeration comes from the first participating Spotify account,
+    # never the bare provider id (which would go down the env-client path).
+    assert seen["source"] == "spotify:work"
+    assert seen["sp"] is None      # no shared env-minted client
+    assert seen["nway_sp"] is None
+
+
+def test_run_nway_keys_directories_by_state_key_not_source(monkeypatch):
+    """_run_nway looks each account's playlists up under ITS OWN state_key:
+    two Spotify accounts (both `source='spotify'`) collided or KeyError'd on
+    the old `dirs[p.source]` access — the per-account dirs are keyed by
+    state_key, so each account consults its own directory."""
+    captured = {}
+
+    class Peer:
+        def __init__(self, state_key):
+            self.state_key = state_key
+            self.source = "spotify"  # same provider for both accounts
+            self.tag = self.name = state_key
+            self.cache_file = ""
+
+        def list_playlists(self):
+            return {"mix": {"id": f"pl-{self.state_key}"}}
+
+        def is_editable(self, pl):
+            return True
+
+    work = Peer("spotify:work")
+    personal = Peer("spotify:personal")
+
+    def fake_reconcile(active, name, playlists, caches, songs, **kw):
+        captured["keys"] = sorted(playlists)
+        captured["active"] = sorted(p.state_key for p in active)
+        return {"added": 0, "removed": 0, "missing": 0, "held": 0, "deferred": 0,
+                "removals_skipped": 0, "failed": 0, "held_removals": [], "failures": []}
+
+    monkeypatch.setattr(runner, "build_peers", lambda opts, sp, songs=None: [work, personal])
+    monkeypatch.setattr(runner, "load_cache", lambda f: {})
+    monkeypatch.setattr(runner, "save_cache", lambda f, c: None)
+    monkeypatch.setattr(runner, "reconcile", fake_reconcile)
+
+    entry = runner._run_nway(_opts(sync_mode="nway", execute=True), object(),
+                             [{"name": "Mix"}], _FakeSongs())[0]
+
+    # Both accounts resolved THEIR OWN directory — no KeyError, no collision
+    # on the shared `source` string.
+    assert captured["keys"] == ["spotify:personal", "spotify:work"]
+    assert captured["active"] == ["spotify:personal", "spotify:work"]
+    assert entry["failed"] == 0
+
+
 def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
     from songmirror.engine import archive
     from songmirror.services.playlists import PlaylistLink

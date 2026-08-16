@@ -17,7 +17,7 @@ import { useI18n } from '@/i18n/useI18n'
 import { cn } from '@/lib/cn'
 import { serviceLogoId, tagDot, tagText } from '@/lib/constants'
 import { isValidIntervalText, isValidPositiveInt } from '@/lib/format'
-import { buildSyncSummaryRows, enabledProvidersOf, lockedSourceOf, syncPeersOf } from '@/lib/syncSummary'
+import { accountMatches, accountStableId, buildSyncSummaryRows, enabledProvidersOf, lockedSourceOf, syncPeersOf } from '@/lib/syncSummary'
 import { PlaylistFilterField } from '../settings/PlaylistFilterField'
 import type { Account, SyncJob, SyncJobUpsertRequest, SyncMode } from '@/types'
 
@@ -276,9 +276,10 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
     if (!job) {
       // Snapshot the connected peers now. Persisting an empty sentinel would
       // make this job silently gain every provider connected in the future.
+      // Store the STABLE account ids (`spotify:default`), never the public id.
       initial.providers = syncPeersOf(accounts)
         .filter((account) => account.state === 'connected')
-        .map((account) => account.id)
+        .map((account) => accountStableId(account))
         .join(',')
     }
     setForm(initial)
@@ -306,6 +307,10 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
   // one-way session.
   const syncSource = form.source || 'spotify'
   const lockedSourceId = lockedSourceOf({ mode: form.mode, source: form.source })
+  // The stable account id of the locked source (legacy jobs may store the bare
+  // provider — `spotify` — which must still match the default account's chip).
+  const lockedPeer = lockedSourceId ? syncPeers.find((a) => accountMatches(a, lockedSourceId)) : undefined
+  const lockedAccountId = lockedPeer ? accountStableId(lockedPeer) : lockedSourceId
   const nonSpotifySourceConflict =
     form.mode !== 'nway' && syncSource !== 'spotify' && (form.download || jellyfinConnected)
 
@@ -319,12 +324,18 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
   // every render, so going back to Direction/Services and changing the
   // source/participants immediately reflects here too.
   const playlistPickerProviderId =
-    form.mode !== 'nway' ? syncSource : (enabledProviders.has('spotify') ? 'spotify' : syncPeers.find((a) => enabledProviders.has(a.id))?.id) || null
+    form.mode !== 'nway'
+      ? syncSource
+      : (() => {
+          if (enabledProviders.has('spotify') || enabledProviders.has('spotify:default')) return 'spotify'
+          const firstPeer = syncPeers.find((a) => enabledProviders.has(accountStableId(a)))
+          return firstPeer ? accountStableId(firstPeer) : null
+        })()
 
   function toggleProvider(id: string) {
-    if (id === lockedSourceId) return // the source — never toggleable
+    if (id === lockedAccountId) return // the source — never toggleable
     const next = new Set(enabledProviders)
-    if (lockedSourceId) next.add(lockedSourceId) // materializing an explicit list must never drop the source
+    if (lockedAccountId) next.add(lockedAccountId) // materializing an explicit list must never drop the source
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setField('providers', [...next].join(','))
@@ -464,8 +475,8 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                       <SourceChip
                         key={account.id}
                         account={account}
-                        selected={syncSource === account.id}
-                        onSelect={() => setField('source', account.id)}
+                        selected={accountMatches(account, syncSource)}
+                        onSelect={() => setField('source', accountStableId(account))}
                       />
                     ))}
                   </div>
@@ -486,9 +497,9 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                 <ProviderChip
                   key={account.id}
                   account={account}
-                  checked={account.id === lockedSourceId || enabledProviders.has(account.id)}
-                  locked={account.id === lockedSourceId}
-                  onToggle={() => toggleProvider(account.id)}
+                  checked={accountStableId(account) === lockedAccountId || enabledProviders.has(accountStableId(account))}
+                  locked={accountStableId(account) === lockedAccountId}
+                  onToggle={() => toggleProvider(accountStableId(account))}
                 />
               ))}
             </div>

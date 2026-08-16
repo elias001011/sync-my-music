@@ -240,11 +240,13 @@ def test_syncs_crud(tmp_path):
     store = SyncStore(dir=tmp_path)
     with TestClient(create_app(settings=SettingsStore(dir=tmp_path), syncs=store)) as client:
         assert client.get("/api/syncs").json() == []
+        # A bare `apple` source is promoted to its participating default account
+        # (apple:default is in the derived participants) — the stable account id.
         jid = client.post("/api/syncs", json={"name": "Workout", "mode": "oneway", "source": "apple"}).json()["id"]
         assert jid
         client.put(f"/api/syncs/{jid}", json={"enabled": False})
         got = next(j for j in client.get("/api/syncs").json() if j["id"] == jid)
-        assert got["enabled"] is False and got["source"] == "apple"  # merge-update kept source
+        assert got["enabled"] is False and got["source"] == "apple:default"  # merge-update kept source
         client.delete(f"/api/syncs/{jid}")
         assert jid not in [j["id"] for j in client.get("/api/syncs").json()]
 

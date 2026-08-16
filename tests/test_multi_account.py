@@ -268,6 +268,171 @@ def test_web_account_crud_named_profiles(tmp_path):
         assert client.delete("/api/accounts/spotify/remove", params={"confirm": True}).status_code == 400
 
 
+def test_oauth_named_account_connect_keeps_full_account_id_in_callback(tmp_path):
+    """connect() for a named profile builds the callback path with the FULL
+    account id (`/oauth/spotify:work/callback`) so the browser handshake
+    resolves back to that account; the default keeps the legacy bare-provider
+    path (`/oauth/spotify/callback`) and its credentials are never touched."""
+    from fastapi.testclient import TestClient
+    from songmirror.web import create_app
+
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "default-cid", "SPOTIFY_CLIENT_SECRET": "default-secret"})
+    with TestClient(create_app(settings=store)) as client:
+        client.post("/api/accounts/spotify/accounts", json={"label": "Work"})
+        client.post("/api/accounts/spotify:work/config",
+                    json={"SPOTIFY_CLIENT_ID": "work-cid", "SPOTIFY_CLIENT_SECRET": "work-secret"})
+
+        r = client.post("/api/accounts/spotify:work/connect")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["kind"] == "redirect"
+        assert body["redirect_uri"].endswith("/oauth/spotify:work/callback")
+        # The authorize URL embeds the same account-scoped callback (URL-encoded).
+        assert "spotify%3Awork%2Fcallback" in body["url"]
+
+        # The default account keeps the legacy callback path.
+        r2 = client.post("/api/accounts/spotify/connect")
+        assert r2.status_code == 200
+        assert r2.json()["redirect_uri"].endswith("/oauth/spotify/callback")
+        assert "spotify%2Fcallback" in r2.json()["url"]
+
+        # Nothing about the named flow leaked into the default account.
+        assert store.account_config("spotify:default", "SPOTIFY_CLIENT_ID") == "default-cid"
+        assert store.get("SPOTIFY_CLIENT_ID") == "default-cid"
+        assert store.account_config("spotify:work", "SPOTIFY_CLIENT_ID") == "work-cid"
+
+
+def test_oauth_callback_instantiates_named_account_connector(tmp_path, monkeypatch):
+    """The callback route must construct the connector for the exact account
+    named in the path (`spotify:work`), never the default."""
+    from fastapi.testclient import TestClient
+    from songmirror.services.accounts import ConnStatus
+    from songmirror.web import create_app
+    import songmirror.web.routers.accounts as accounts_router
+
+    captured = {}
+
+    class FakeSpotify:
+        name = "Spotify"
+        auth_kind = "oauth_redirect"
+
+        def __init__(self, settings, account_id=None):
+            captured["account_id"] = account_id
+
+        def complete_redirect(self, params):
+            captured["params"] = params
+            return ConnStatus("connected", "authorized")
+
+    monkeypatch.setitem(accounts_router.CONNECTORS, "spotify", FakeSpotify)
+
+    with TestClient(create_app(settings=SettingsStore(dir=tmp_path))) as client:
+        r = client.get("/oauth/spotify:work/callback?code=abc123")
+        assert r.status_code == 200
+        assert captured["account_id"] == "spotify:work"
+        assert "spotify:work" in captured["params"]["url"]
+        # The legacy bare path still resolves to the default account.
+        r2 = client.get("/oauth/spotify/callback?code=abc123")
+        assert r2.status_code == 200
+        assert captured["account_id"] == "spotify:default"
+
+
+def test_sync_job_normalizes_bare_ids_and_source(tmp_path):
+    """A payload mixing bare providers and account ids persists fully
+    normalized: source becomes `spotify:default`, accounts become
+    `spotify:default,spotify:work`. And `_opts_for()` loads the real
+    `spotify:default` snapshot (legacy flat keys), never an empty config."""
+    from fastapi.testclient import TestClient
+    from songmirror.services.sync_service import SyncService
+    from songmirror.web import create_app
+
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "default-cid"})
+    store.save_account("spotify:work", label="Work", config={"SPOTIFY_CLIENT_ID": "work-cid"})
+
+    class _Bus:
+        def publish(self, *a, **k):
+            pass
+
+    with TestClient(create_app(settings=store)) as client:
+        r = client.post("/api/syncs", json={
+            "name": "Two Spotify",
+            "source": "spotify",
+            "providers": "spotify,spotify:work",
+            "accounts": "spotify,spotify:work",
+        })
+        assert r.status_code == 200
+        job = r.json()
+        assert job["source"] == "spotify:default"
+        assert job["accounts"] == "spotify:default,spotify:work"
+
+        svc = SyncService(store, _Bus(), client.app.state.syncs)
+        opts = svc._opts_for(SyncJob(**{k: v for k, v in job.items() if k != "id"}), execute=False)
+        assert opts.account_configs["spotify:default"]["SPOTIFY_CLIENT_ID"] == "default-cid"
+        assert opts.account_configs["spotify:work"]["SPOTIFY_CLIENT_ID"] == "work-cid"
+        assert opts.accounts == {"spotify:default": "spotify", "spotify:work": "spotify"}
+
+
+def test_build_targets_source_default_allows_named_same_provider_target(monkeypatch):
+    """With the normalized source `spotify:default`, a named `spotify:work`
+    account is a valid DESTINATION (the whole point of multi-account); a
+    legacy bare source skips only that provider's `:default` account."""
+    from songmirror.engine import targets
+
+    class Fake:
+        def __init__(self, account, src):
+            self.state_key = account
+            self.tag = self.name = src.title()
+            self.source = src
+
+    def _builder(src):
+        def build(opts, sp, sync_peer=False, songs=None, account=None):
+            return Fake(account or f"{src}:default", src)
+        return build
+
+    monkeypatch.setitem(targets._REGISTRY, "spotify", _builder("spotify"))
+    monkeypatch.setitem(targets._REGISTRY, "ytmusic", _builder("ytmusic"))
+
+    opts = parse_args([])
+    opts.accounts = {"spotify:default": "spotify", "spotify:work": "spotify",
+                     "ytmusic:default": "ytmusic"}
+
+    # Normalized source: only spotify:default excluded.
+    opts.sync_source = "spotify:default"
+    out = targets.build_targets(opts)
+    assert sorted(t.state_key for t in out) == ["spotify:work", "ytmusic:default"]
+
+    # Legacy bare source: also only the provider's :default account excluded —
+    # spotify:work stays a target (defensive compat).
+    opts.sync_source = "spotify"
+    out = targets.build_targets(opts)
+    assert sorted(t.state_key for t in out) == ["spotify:work", "ytmusic:default"]
+
+
+def test_oauth_callback_unknown_provider_answers_404_not_500(tmp_path):
+    """The OAuth callback page is reachable without auth — an unknown provider
+    id in the URL must never crash the app with a 500."""
+    from fastapi.testclient import TestClient
+    from songmirror.web import create_app
+
+    with TestClient(create_app(settings=SettingsStore(dir=tmp_path))) as client:
+        assert client.get("/oauth/evil/callback?code=x").status_code == 404
+        assert client.get("/oauth/spotify/callback?code=x").status_code == 200  # known provider still renders
+
+
+def test_prefs_rejects_empty_label(tmp_path):
+    """Renaming via prefs with a blank label must 400, not silently reset the
+    label to the account id (matching the library rename contract)."""
+    from fastapi.testclient import TestClient
+    from songmirror.web import create_app
+
+    with TestClient(create_app(settings=SettingsStore(dir=tmp_path))) as client:
+        client.post("/api/accounts/spotify/accounts", json={"label": "Work"})
+        r = client.put("/api/accounts/spotify:work/prefs", json={"label": "   "})
+        assert r.status_code == 400
+        assert client.get("/api/accounts").json()  # list still works after the refusal
+
+
 def test_syncjob_legacy_providers_migrate_to_default_accounts(tmp_path):
     store = SyncStore(dir=tmp_path)
     store.upsert(SyncJob(name="Legacy", providers="spotify,apple", source="spotify"))

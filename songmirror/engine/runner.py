@@ -202,6 +202,14 @@ def run_pass(opts, should_continue=None):
     # Writable (modify scopes) only for an actual N-way execute — so dry-runs
     # preview without forcing the one-time re-auth a scope change triggers.
     source_provider = opts.sync_source if opts.sync_mode == "oneway" else "spotify"
+    if opts.accounts and opts.sync_mode == "nway":
+        # N-way has no single source of truth; the playlist enumerator is the
+        # first participating Spotify account (the reconcile's name master),
+        # else the first participant. Never the bare provider id — that would
+        # send the legacy (env-credential) client path below.
+        account_ids = list(opts.accounts)
+        source_provider = next((a for a in account_ids if a.split(":", 1)[0] == "spotify"), None) or \
+            (account_ids[0] if account_ids else "spotify")
     wanted_providers = {s.strip() for s in (opts.providers or "").split(",") if s.strip()}
     spotify_requested = not wanted_providers or "spotify" in wanted_providers
     # Spotify needs a writable client whenever it's a write destination: any N-way
@@ -213,7 +221,7 @@ def run_pass(opts, should_continue=None):
     # The shared client only exists on the legacy provider-only path. Account-
     # scoped passes mint one client per Spotify account inside the target
     # builders, each from its own config/token cache — never os.environ.
-    if ":" not in str(source_provider):
+    if ":" not in str(source_provider) and not opts.accounts:
         cookie_only = spotify_write_backend() == "cookie"
         if (source_provider == "spotify" or spotify_requested) and not cookie_only:
             try:
@@ -251,7 +259,10 @@ def run_pass(opts, should_continue=None):
             return _summary(opts, [], pass_started)
         from . import downloads
 
-        downloads.refresh(sp, selected, opts.download_dir)
+        # Account-scoped passes have no shared client; the source target carries
+        # its own per-account client (None in cookie mode, where spotDL can't
+        # read anyway). Fall back to the legacy shared client.
+        downloads.refresh(getattr(source, "_sp", None) or sp, selected, opts.download_dir)
         return _summary(opts, [], pass_started)
 
     if opts.sync_mode == "nway":
@@ -262,7 +273,7 @@ def run_pass(opts, should_continue=None):
             songs.close()
         c = ctrl()
         if c == "run":
-            _post_sync(opts, sp, selected, should_continue=ctrl)
+            _post_sync(opts, getattr(source, "_sp", None) or sp, selected, should_continue=ctrl)
         return _summary(opts, per_target, pass_started, interrupted=(None if c == "run" else c))
 
     targets = build_targets(opts, sp)
@@ -360,7 +371,8 @@ def run_pass(opts, should_continue=None):
 
     c = ctrl()
     if c == "run":
-        _post_sync(opts, sp, selected, source_is_spotify=src_is_spotify, should_continue=ctrl)
+        _post_sync(opts, getattr(source, "_sp", None) or sp, selected,
+                   source_is_spotify=src_is_spotify, should_continue=ctrl)
     return _summary(opts, [_summary_entry(a["name"], a) for a in results.values()], pass_started,
                     interrupted=(None if c == "run" else c))
 
@@ -421,7 +433,7 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
             key = name.strip().casefold()
             playlists = {}
             for p in peers:
-                pl = dirs[p.source].get(key)
+                pl = dirs[p.state_key].get(key)
                 if not pl:
                     if not opts.execute:
                         log_note(f"{name}: no {p.name} playlist yet - would create on --execute", tag=p.tag)

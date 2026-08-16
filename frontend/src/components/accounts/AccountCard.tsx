@@ -283,7 +283,7 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
               </Button>
             </>
           )}
-          {!isDefault && account.state === 'connected' && (
+          {account.state === 'connected' && (
             <Button variant="ghost" size="sm" onClick={() => void importToLibrary()} loading={importing} className="ml-auto">
               Import playlists
             </Button>

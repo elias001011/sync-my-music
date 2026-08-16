@@ -188,6 +188,8 @@ def set_account_prefs(cid: str, request: Request, body: dict = Body(...)):
         for surface in SURFACES if surface in (body.get("surfaces") or {})
     }
     label = body.get("label")
+    if label is not None and not str(label).strip():
+        raise HTTPException(status_code=400, detail="label cannot be empty")
     enabled = body.get("enabled")
     store.save_account(account_id, label=(str(label).strip() if label else None),
                        enabled=(bool(enabled) if enabled is not None else None),
@@ -227,7 +229,12 @@ async def connect(cid: str, request: Request):
     provider = account_id.split(":", 1)[0]
     c = _conn(request, account_id)
     if c.auth_kind == "oauth_redirect":
-        uri = _redirect_uri(request, provider)
+        # Named profiles get the FULL account id in the callback path
+        # (`/oauth/spotify:work/callback`) so the browser handshake resolves
+        # back to THIS account. The default keeps the legacy bare-provider path
+        # (`/oauth/spotify/callback`) — its registered redirect URI is unchanged.
+        public_id = account_id if not account_id.endswith(":default") else provider
+        uri = _redirect_uri(request, public_id)
         return {"kind": "redirect", "url": c.begin_redirect(uri), "redirect_uri": uri}
     if c.auth_kind == "oauth_device":
         return {"kind": "device", **asdict(c.begin_device())}
@@ -242,10 +249,20 @@ def oauth_callback(cid: str, request: Request):
     # Treat that as a failed connection and, likewise, catch any token-exchange
     # error — the callback must never 500 and show a raw "Internal Server Error".
     provider = cid.split(":", 1)[0]
+    connector = CONNECTORS.get(provider)
+    if connector is None:
+        # An unknown provider id in the callback URL must never 500 — the
+        # callback page is reachable without auth, so answer 404 like any
+        # other unknown route.
+        return HTMLResponse(
+            f"<body style='font-family:system-ui;padding:2rem'>"
+            f"<h2>Unknown provider</h2><p>No such connector: {html.escape(cid)}</p></body>",
+            status_code=404,
+        )
     account_id = cid if ":" in cid else f"{cid}:default"
     err = request.query_params.get("error")
     if err:
-        st = ConnStatus("error", f"{CONNECTORS[provider].name} returned '{err}' — nothing was authorized.")
+        st = ConnStatus("error", f"{connector.name} returned '{err}' — nothing was authorized.")
     else:
         try:
             st = _conn(request, account_id).complete_redirect({"url": str(request.url)})
@@ -253,7 +270,7 @@ def oauth_callback(cid: str, request: Request):
             st = ConnStatus("error", f"could not finish authorization ({e})")
     return HTMLResponse(
         f"<body style='font-family:system-ui;padding:2rem'>"
-        f"<h2>{html.escape(CONNECTORS[provider].name)}: {html.escape(st.state)}</h2>"
+        f"<h2>{html.escape(connector.name)}: {html.escape(st.state)}</h2>"
         f"<p>{html.escape(st.detail or '')}</p>"
         f"<p>You can close this tab and return to the app.</p></body>"
     )
