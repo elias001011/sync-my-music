@@ -284,8 +284,15 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
             </>
           )}
           {account.state === 'connected' && (
-            <Button variant="ghost" size="sm" onClick={() => void importToLibrary()} loading={importing} className="ml-auto">
-              Import playlists
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void importToLibrary()}
+              loading={importing}
+              className="ml-auto"
+              title="Only playlists are imported. Liked tracks, saved albums and followed artists have no live adapter yet — use the official export (ZIP/JSON) for those."
+            >
+              Import playlists (only)
             </Button>
           )}
           {isDefault && (
