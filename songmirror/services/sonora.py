@@ -217,13 +217,27 @@ class SonoraAdapter:
                            JOIN artists ar ON ar.id=t.artist_id
                            WHERE ci.collection_id=? ORDER BY ci.position""",
                         (playlist["id"],)).fetchall()
-                    out["playlistEntries"][str(index)] = [
-                        {"playlistId": index, "videoId": row["video_id"], "position": row["position"],
-                         "title": row["title"], "artist": row["artist"], "thumbnailUrl": None,
-                         "duration": int((row["duration_ms"] or 0) / 1000) or None,
-                         "isVideo": False, "isExplicit": False}
-                        for row in rows if row["video_id"]
-                    ]
+                    # The Sonora merge reads the local entries once before the
+                    # insert loop and never updates its seen-set, so a videoId
+                    # repeated inside one playlist (same song imported from two
+                    # sources under different canonical tracks) makes the app's
+                    # second INSERT hit its UNIQUE(playlist_id, video_id) and
+                    # the whole merge reply 500. Dedupe by videoId, first
+                    # occurrence (lowest position) wins.
+                    entries: list[dict[str, Any]] = []
+                    seen_video: set[str] = set()
+                    for row in rows:
+                        video_id = row["video_id"]
+                        if not video_id or video_id in seen_video:
+                            continue
+                        seen_video.add(video_id)
+                        entries.append({
+                            "playlistId": index, "videoId": video_id, "position": len(entries) + 1,
+                            "title": row["title"], "artist": row["artist"], "thumbnailUrl": None,
+                            "duration": int((row["duration_ms"] or 0) / 1000) or None,
+                            "isVideo": False, "isExplicit": False,
+                        })
+                    out["playlistEntries"][str(index)] = entries
             out["history"] = []
             if "history" in selected:
                 rows = conn.execute(

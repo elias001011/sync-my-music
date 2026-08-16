@@ -326,3 +326,25 @@ def test_sonora_export_translates_surfaces_to_backup_v2_schema(tmp_path):
     assert exported["likedAlbums"] == []
     assert exported["likedSongs"] == []
     assert exported["likedPlaylists"] == playlists
+
+
+def test_sonora_export_dedupes_video_ids_within_playlists(tmp_path):
+    """The Sonora app's merge reads the playlist entries once before its insert
+    loop and never updates the seen-set: a videoId repeated inside one playlist
+    makes the app's second INSERT hit UNIQUE(playlist_id, video_id) and the
+    whole merge reply 500 ("SqliteException 1555"). The export must emit each
+    videoId once per playlist, first occurrence (lowest position) winning."""
+    db = MusicDatabase(tmp_path / "music.db")
+    db.import_provider_library(
+        "musify", "musify:default", "Musify",
+        playlists=[{"provider_id": "p1", "name": "Road", "tracks": [
+            {"provider_track_id": "vidAAAA", "track_name": "A", "artist_name": "Art", "duration_ms": 180000},
+            {"provider_track_id": "vidBBBB", "track_name": "B", "artist_name": "Art", "duration_ms": 200000},
+            {"provider_track_id": "vidAAAA", "track_name": "A again", "artist_name": "Art", "duration_ms": 180000},
+        ]}])
+    adapter = SonoraAdapter(db)
+    entries = adapter.export_backup()["playlistEntries"]["1"]
+    # The duplicate videoId is emitted once; the app's UNIQUE constraint
+    # would otherwise 500 on the second INSERT.
+    assert sorted(e["videoId"] for e in entries) == ["vidAAAA", "vidBBBB"]
+    assert [e["position"] for e in entries] == [1, 2]
