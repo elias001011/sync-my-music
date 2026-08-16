@@ -188,9 +188,11 @@ def build_one(provider_id, opts, sp=None):
 
 def is_peer(provider_id):
     """Whether a provider is a sync/transfer peer — i.e. has a MirrorTarget that
-    can read and write tracks. False for browse/output-only services like
-    Jellyfin, which the download mirror feeds instead of track-level writes."""
-    return provider_id in _REGISTRY
+    can read and write tracks. Accepts account ids too (`spotify:work` resolves
+    through its bare provider), so a named profile of a peer provider counts as
+    a peer. False for browse/output-only services like Jellyfin, which the
+    download mirror feeds instead of track-level writes."""
+    return str(provider_id).split(":", 1)[0] in _REGISTRY
 
 
 def build_peers(opts, sp, songs=None):

@@ -409,6 +409,39 @@ def test_build_targets_source_default_allows_named_same_provider_target(monkeypa
     assert sorted(t.state_key for t in out) == ["spotify:work", "ytmusic:default"]
 
 
+def test_transfer_accepts_named_accounts_as_peer_endpoints(tmp_path):
+    """A named live profile (`spotify:work`) must be accepted as a transfer
+    endpoint. Before the fix, is_peer('spotify:work') was False (the registry
+    is keyed by bare providers) and the job died with a bogus 'browse-only
+    service' rejection even though Spotify is a read/write peer."""
+    import asyncio
+    import uuid
+
+    from songmirror.services.events import EventBus
+    from songmirror.services.transfers import TransferService
+
+    store = SettingsStore(dir=tmp_path)
+    store.save_account("spotify:work", label="Work")
+
+    class _Sync:
+        def run_exclusive(self, fn):
+            return asyncio.to_thread(fn)
+
+    svc = TransferService(store, EventBus(), _Sync())
+    spec = {"source_provider": "spotify:work", "source_playlist_id": "p1",
+            "dest_provider": "spotify:default", "dest_playlist_id": None, "dest_name": "Copy"}
+    job = {"id": uuid.uuid4().hex[:8], "status": "queued",
+           "source": {"provider": spec["source_provider"], "playlist_id": "p1", "playlist_name": ""},
+           "dest": {"provider": spec["dest_provider"], "playlist_id": None, "playlist_name": "Copy"},
+           "added": 0, "deferred": 0, "conflicts": [], "error": None,
+           "total": 0, "processed": 0, "_spec": spec, "_control": "run"}
+    asyncio.run(svc._run(job, spec))
+    assert job["status"] == "error"
+    # Unconfigured profiles -> the honest "not connected" error, never the
+    # bogus browse-only rejection of a peer provider.
+    assert "not connected" in job["error"], job["error"]
+
+
 def test_oauth_callback_unknown_provider_answers_404_not_500(tmp_path):
     """The OAuth callback page is reachable without auth — an unknown provider
     id in the URL must never crash the app with a 500."""
