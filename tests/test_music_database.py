@@ -237,3 +237,22 @@ def test_sonora_backup_v2_import_export(tmp_path):
     assert exported["version"] == 2
     assert exported["playlists"][0]["name"] == "Road"
     assert exported["playlistEntries"]["1"][0]["videoId"] == "abcdefghijk"
+
+
+def test_sonora_export_aggregates_the_whole_canonical_library(tmp_path):
+    """The push to a Sonora device carries the HUB's library — playlists and
+    tracks imported under OTHER accounts (Musify hive, live YT import) — not
+    just the sonora:default slot. Before the fix the export was scoped to the
+    adapter's own account, so a fresh sync pushed an EMPTY library and the
+    Sonora app stayed empty."""
+    db = MusicDatabase(tmp_path / "music.db")
+    # Another account's library (e.g. a Musify hive or a live YT import).
+    db.import_provider_library(
+        "musify", "musify:default", "Musify",
+        playlists=[{"provider_id": "p1", "name": "Road",
+                    "tracks": [{"provider_track_id": "vid1234567890a", "track_name": "Song",
+                                 "artist_name": "Artist", "duration_ms": 180000}]}])
+    adapter = SonoraAdapter(db)  # sonora:default owns nothing itself
+    exported = adapter.export_backup()
+    assert [p["name"] for p in exported["playlists"]] == ["Road"]
+    assert exported["playlistEntries"]["1"][0]["videoId"] == "vid1234567890a"

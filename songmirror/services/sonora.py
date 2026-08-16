@@ -182,6 +182,13 @@ class SonoraAdapter:
         return imported
 
     def export_backup(self, surfaces: list[str] | None = None) -> dict[str, Any]:
+        """The HUB's library — every account's imported data — in Sonora's
+        backup-v2 format. Scoping this to the adapter's own slot made a fresh
+        sync push an empty library: the user's playlists/tracks live under the
+        accounts that imported them (musify:default, spotify:default,
+        ytmusic:default), not under sonora:default. import_backup() still lands
+        in this adapter's slot; the export intentionally aggregates across all
+        canonical accounts so the device receives the whole library."""
         selected = set(surfaces or DEFAULT_SURFACES)
         out: dict[str, Any] = {"version": 2, "exportedAt": self._iso()}
         with self.db.connect() as conn:
@@ -189,10 +196,12 @@ class SonoraAdapter:
             out["followedArtists"] = self._export_surface(conn, "followed_artists") if "followedArtists" in selected else []
             out["likedAlbums"] = self._export_surface(conn, "liked_albums") if "likedAlbums" in selected else []
             out["likedPlaylists"] = self._export_surface(conn, "liked_playlists") if "likedPlaylists" in selected else []
+            # Every canonical playlist, once — collections are shared rows, so
+            # mirroring the same playlist under several accounts stays a single
+            # entry (GROUP BY the collection id).
             playlists = conn.execute(
                 """SELECT c.* FROM collections c JOIN collection_mirrors cm ON cm.collection_id=c.id
-                   WHERE c.kind='playlist' AND cm.account_id=? ORDER BY c.created_at""",
-                (self.account_id,)).fetchall()
+                   WHERE c.kind='playlist' GROUP BY c.id ORDER BY c.created_at""").fetchall()
             out["playlists"] = []
             out["playlistEntries"] = {}
             if "playlists" in selected:
@@ -202,11 +211,12 @@ class SonoraAdapter:
                                              "createdAt": self._iso(playlist["created_at"])})
                     rows = conn.execute(
                         """SELECT ci.position, t.title, ar.name artist, t.duration_ms,
-                                  COALESCE(st.provider_track_id, '') video_id
+                                  COALESCE((SELECT st.provider_track_id FROM service_tracks st
+                                            WHERE st.track_id=t.id AND st.provider_track_id != '' LIMIT 1), '') video_id
                            FROM collection_items ci JOIN tracks t ON t.id=ci.track_id
                            JOIN artists ar ON ar.id=t.artist_id
-                           LEFT JOIN service_tracks st ON st.track_id=t.id AND st.account_id=?
-                           WHERE ci.collection_id=? ORDER BY ci.position""", (self.account_id, playlist["id"])).fetchall()
+                           WHERE ci.collection_id=? ORDER BY ci.position""",
+                        (playlist["id"],)).fetchall()
                     out["playlistEntries"][str(index)] = [
                         {"playlistId": index, "videoId": row["video_id"], "position": row["position"],
                          "title": row["title"], "artist": row["artist"], "thumbnailUrl": None,
@@ -218,12 +228,11 @@ class SonoraAdapter:
             if "history" in selected:
                 rows = conn.execute(
                     """SELECT t.title, ar.name artist, t.duration_ms, MAX(l.listened_at) played_at,
-                              COUNT(*) play_count, COALESCE(st.provider_track_id, '') video_id
+                              COUNT(*) play_count,
+                              COALESCE((SELECT st.provider_track_id FROM service_tracks st
+                                        WHERE st.track_id=t.id AND st.provider_track_id != '' LIMIT 1), '') video_id
                        FROM listens l JOIN tracks t ON t.id=l.track_id JOIN artists ar ON ar.id=t.artist_id
-                       LEFT JOIN service_tracks st ON st.track_id=t.id AND st.account_id=?
-                       WHERE l.account_id=?
-                       GROUP BY t.id ORDER BY played_at DESC LIMIT 500""",
-                    (self.account_id, self.account_id)).fetchall()
+                       GROUP BY t.id ORDER BY played_at DESC LIMIT 500""").fetchall()
                 out["history"] = [
                     {"videoId": r["video_id"], "title": r["title"], "artist": r["artist"],
                      "thumbnailUrl": None, "playedAt": self._iso(r["played_at"]), "playCount": r["play_count"],
@@ -235,9 +244,25 @@ class SonoraAdapter:
         return out
 
     def _export_surface(self, conn, surface: str) -> list[dict[str, Any]]:
-        rows = conn.execute("SELECT metadata FROM surface_items WHERE account_id=? AND surface=? ORDER BY added_at",
-                            (self.account_id, surface)).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        """Every account's rows for one surface, deduped by the entity's stable
+        id (ytid/videoId/playlistId) so the same liked track or playlist imported
+        from two sources appears once."""
+        rows = conn.execute(
+            "SELECT metadata FROM surface_items WHERE surface=? ORDER BY added_at", (surface,)).fetchall()
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                meta = json.loads(row[0])
+            except (TypeError, ValueError):
+                continue
+            key = str(meta.get("ytid") or meta.get("videoId") or meta.get("playlistId")
+                      or meta.get("albumId") or meta.get("artistId") or json.dumps(meta, sort_keys=True))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(meta)
+        return out
 
     @staticmethod
     def _parse_time(value: Any) -> int:
