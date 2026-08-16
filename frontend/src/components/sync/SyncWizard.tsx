@@ -12,6 +12,8 @@ import { TextField } from '@/components/ui/TextField'
 import { Toggle } from '@/components/ui/Toggle'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { useSettings } from '@/hooks/useSettings'
+import type { MessageKey } from '@/i18n/messages'
+import { useI18n } from '@/i18n/useI18n'
 import { cn } from '@/lib/cn'
 import { serviceLogoId, tagDot, tagText } from '@/lib/constants'
 import { isValidIntervalText, isValidPositiveInt } from '@/lib/format'
@@ -72,26 +74,26 @@ function formFromJob(job: SyncJob | null): JobFormState {
   }
 }
 
-const INTERVAL_PRESETS: Array<{ value: string; label: string }> = [
-  { value: '15m', label: 'Every 15 minutes' },
-  { value: '30m', label: 'Every 30 minutes' },
-  { value: '1h', label: 'Every hour' },
-  { value: '2h', label: 'Every 2 hours' },
-  { value: '3h', label: 'Every 3 hours' },
-  { value: '6h', label: 'Every 6 hours' },
-  { value: '12h', label: 'Every 12 hours' },
-  { value: '24h', label: 'Once a day' },
+const INTERVAL_PRESETS: Array<{ value: string; labelKey: MessageKey }> = [
+  { value: '15m', labelKey: 'wizard.interval15m' },
+  { value: '30m', labelKey: 'wizard.interval30m' },
+  { value: '1h', labelKey: 'wizard.interval1h' },
+  { value: '2h', labelKey: 'wizard.interval2h' },
+  { value: '3h', labelKey: 'wizard.interval3h' },
+  { value: '6h', labelKey: 'wizard.interval6h' },
+  { value: '12h', labelKey: 'wizard.interval12h' },
+  { value: '24h', labelKey: 'wizard.interval24h' },
 ]
 
 // The wizard's five steps, in order. `intro` is the one friendly sentence
 // shown above each step's fields; `label` is what the stepper shows.
 const STEPS = [
-  { label: 'Direction', intro: 'Which way changes flow between your services.' },
-  { label: 'Services', intro: 'Which services to keep in sync.' },
-  { label: 'Playlists', intro: 'Limit syncing to specific playlists, or leave empty to sync every same-named pair.' },
-  { label: 'Schedule', intro: 'Run this sync on its own schedule, or only when you trigger it yourself.' },
-  { label: 'Limits & downloads', intro: "Guardrails so one pass can't make a huge change, plus an optional offline copy of what's synced." },
-] as const
+  { labelKey: 'wizard.direction', introKey: 'wizard.directionIntro' },
+  { labelKey: 'wizard.services', introKey: 'wizard.servicesIntro' },
+  { labelKey: 'wizard.playlists', introKey: 'wizard.playlistsIntro' },
+  { labelKey: 'wizard.schedule', introKey: 'wizard.scheduleIntro' },
+  { labelKey: 'wizard.limits', introKey: 'wizard.limitsIntro' },
+] as const satisfies ReadonlyArray<{ labelKey: MessageKey; introKey: MessageKey }>
 
 /** A followers/services toggle chip — `locked` marks whichever service is
  * currently this job's sync source, which is always included and can't be
@@ -107,6 +109,7 @@ function ProviderChip({
   locked: boolean
   onToggle: () => void
 }) {
+  const { t } = useI18n()
   const logoId = serviceLogoId(account.id)
   const connected = account.state === 'connected'
 
@@ -118,9 +121,9 @@ function ProviderChip({
       aria-pressed={connected ? checked : undefined}
       title={
         !connected
-          ? `Connect ${account.name} on the Accounts page to include it in syncing.`
+          ? t('wizard.connectProvider', { name: account.name })
           : locked
-            ? `${account.name} is the sync source, always included, and it's never modified.`
+            ? t('wizard.lockedProvider', { name: account.name })
             : undefined
       }
       className={cn(
@@ -140,10 +143,10 @@ function ProviderChip({
       {account.name}
       {locked && connected && (
         <span className="rounded-full bg-accent px-1.5 py-[1px] font-mono text-[9px] font-bold uppercase tracking-wide text-on-accent">
-          source
+          {t('wizard.source')}
         </span>
       )}
-      {!connected && <span className="font-normal text-text-3">not connected</span>}
+      {!connected && <span className="font-normal text-text-3">{t('wizard.notConnected')}</span>}
     </button>
   )
 }
@@ -152,6 +155,7 @@ function ProviderChip({
  * source of truth" picker — same visual language as ProviderChip, but
  * exclusive-choice (radio) rather than a toggle set. */
 function SourceChip({ account, selected, onSelect }: { account: Account; selected: boolean; onSelect: () => void }) {
+  const { t } = useI18n()
   const logoId = serviceLogoId(account.id)
   const connected = account.state === 'connected'
 
@@ -162,7 +166,7 @@ function SourceChip({ account, selected, onSelect }: { account: Account; selecte
       aria-checked={connected ? selected : undefined}
       onClick={connected ? onSelect : undefined}
       disabled={!connected}
-      title={!connected ? `Connect ${account.name} on the Accounts page to choose it as the source.` : undefined}
+      title={!connected ? t('wizard.chooseSource', { name: account.name }) : undefined}
       className={cn(
         'inline-flex h-9 items-center gap-2 rounded-chip border-[1.5px] px-3 text-[13px] font-semibold transition-colors duration-fast',
         !connected
@@ -178,7 +182,7 @@ function SourceChip({ account, selected, onSelect }: { account: Account; selecte
         <span className={cn('size-2 shrink-0 rounded-full', tagDot(account.id))} aria-hidden="true" />
       )}
       {account.name}
-      {!connected && <span className="font-normal text-text-3">not connected</span>}
+      {!connected && <span className="font-normal text-text-3">{t('wizard.notConnected')}</span>}
     </button>
   )
 }
@@ -190,20 +194,21 @@ function SourceChip({ account, selected, onSelect }: { account: Account; selecte
  * revisit, not a linear onboarding wizard, so every marker stays clickable
  * regardless of visited state. */
 function StepTabs({ current, visited, onJump }: { current: number; visited: Set<number>; onJump: (i: number) => void }) {
+  const { t } = useI18n()
   return (
     <div className="flex flex-col gap-2">
-      <div role="radiogroup" aria-label="Sync setup steps" className="flex items-center">
+      <div role="radiogroup" aria-label={t('wizard.setupSteps')} className="flex items-center">
         {STEPS.map((s, i) => {
           const isCurrent = i === current
           const isVisited = visited.has(i) && !isCurrent
           return (
-            <div key={s.label} className={cn('flex items-center', i < STEPS.length - 1 && 'flex-1')}>
+            <div key={s.labelKey} className={cn('flex items-center', i < STEPS.length - 1 && 'flex-1')}>
               <button
                 type="button"
                 role="radio"
                 aria-checked={isCurrent}
-                aria-label={s.label}
-                title={s.label}
+                aria-label={t(s.labelKey)}
+                title={t(s.labelKey)}
                 onClick={() => onJump(i)}
                 className={cn(
                   'flex size-8 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-bold transition-colors duration-fast',
@@ -224,7 +229,7 @@ function StepTabs({ current, visited, onJump }: { current: number; visited: Set<
         })}
       </div>
       <p className="text-center font-mono text-[11px] font-semibold tracking-wide text-text-2">
-        Step {current + 1} of {STEPS.length} · {STEPS[current].label}
+        {t('wizard.stepCount', { current: current + 1, total: STEPS.length, label: t(STEPS[current].labelKey) })}
       </p>
     </div>
   )
@@ -249,6 +254,7 @@ const FORM_ID = 'sync-wizard-form'
  * read-only fetch of the global download folder, purely to show it in the
  * review's Downloads row. */
 export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
+  const { t } = useI18n()
   const { settings } = useSettings()
   const [form, setForm] = useState<JobFormState>(NEW_JOB_DEFAULTS)
   const [step, setStep] = useState(0)
@@ -333,7 +339,7 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
 
   const previewJob: SyncJob = {
     id: job?.id ?? '',
-    name: form.name.trim() || 'This sync',
+    name: form.name.trim() || t('wizard.thisSync'),
     enabled: form.enabled,
     mode: form.mode,
     source: form.source,
@@ -379,15 +385,15 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
     <Modal
       open={open}
       onClose={onClose}
-      title={job ? `Edit "${job.name}"` : 'New sync'}
-      description="A self-contained sync configuration: direction, services, playlists, schedule, and limits."
+      title={job ? t('wizard.editTitle', { name: job.name }) : t('wizard.newTitle')}
+      description={t('wizard.description')}
       footer={
         <>
           <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" form={FORM_ID} loading={saving} disabled={!formValid}>
-            {job ? 'Save changes' : 'Create sync'}
+            {job ? t('common.saveChanges') : t('wizard.create')}
           </Button>
         </>
       }
@@ -403,9 +409,9 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
         {error && <p className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
 
         <TextField
-          label="Name"
-          help='Shown in your list of syncs, e.g. "Workout playlists" or "Family Spotify".'
-          placeholder="e.g. Default"
+          label={t('wizard.name')}
+          help={t('wizard.nameHelp')}
+          placeholder={t('wizard.namePlaceholder')}
           required
           value={form.name}
           onChange={(e) => setField('name', e.target.value)}
@@ -413,8 +419,8 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
 
         <StepTabs current={step} visited={visited} onJump={goToStep} />
 
-        <SettingsGroup label={STEPS[step].label.toUpperCase()}>
-          <p className="text-xs leading-relaxed text-text-3">{STEPS[step].intro}</p>
+        <SettingsGroup label={t(STEPS[step].labelKey).toUpperCase()}>
+          <p className="text-xs leading-relaxed text-text-3">{t(STEPS[step].introKey)}</p>
 
           {step === 0 && (
             <>
@@ -424,29 +430,28 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                   value="oneway"
                   checked={form.mode !== 'nway'}
                   onChange={() => setField('mode', 'oneway')}
-                  title="One-way →"
-                  description="One provider is the source of truth. Everyone else follows it, and it's never modified."
+                  title={t('wizard.oneWay')}
+                  description={t('wizard.oneWayHelp')}
                 />
                 <RadioCard
                   name="sync-mode"
                   value="nway"
                   checked={form.mode === 'nway'}
                   onChange={() => setField('mode', 'nway')}
-                  title="Bidirectional (N-way) ⇄"
-                  description="A track added or removed on any connected service propagates to all the others."
+                  title={t('wizard.nWay')}
+                  description={t('wizard.nWayHelp')}
                 />
               </div>
 
               {form.mode !== 'nway' && (
                 <div className="flex flex-col gap-2.5 border-t border-border pt-3.5">
                   <div>
-                    <span className="text-[12.5px] font-semibold text-text-2">Source of truth</span>
+                    <span className="text-[12.5px] font-semibold text-text-2">{t('wizard.sourceTruth')}</span>
                     <p className="mt-1 text-xs leading-relaxed text-text-3">
-                      This provider's playlists are the source of truth. Every other service follows it, and it's
-                      never modified.
+                      {t('wizard.sourceTruthHelp')}
                     </p>
                   </div>
-                  <div role="radiogroup" aria-label="Source of truth" className="flex flex-wrap gap-2">
+                  <div role="radiogroup" aria-label={t('wizard.sourceTruth')} className="flex flex-wrap gap-2">
                     {syncPeers.map((account) => (
                       <SourceChip
                         key={account.id}
@@ -459,8 +464,7 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                   {nonSpotifySourceConflict && (
                     <p className="flex items-start gap-1.5 text-xs leading-relaxed text-text-3">
                       <LuInfo className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                      Local downloads + Jellyfin covers currently require Spotify as the source, so they'll be
-                      skipped.
+                      {t('wizard.spotifyRequired')}
                     </p>
                   )}
                 </div>
@@ -495,22 +499,22 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
               <Toggle
                 checked={form.enabled}
                 onChange={(v) => setField('enabled', v)}
-                label="Active"
+                label={t('wizard.active')}
                 description={
                   form.enabled
-                    ? 'Runs on its own schedule, and is included in "Run all enabled".'
-                    : 'Paused, skipped by its schedule and by "Run all enabled". You can still sync it manually.'
+                    ? t('wizard.activeHelp')
+                    : t('wizard.pausedHelp')
                 }
               />
               <SelectField
-                label="Interval"
-                help="How often this sync runs automatically."
+                label={t('wizard.interval')}
+                help={t('wizard.intervalHelp')}
                 value={form.interval}
                 onChange={(e) => setField('interval', e.target.value)}
                 options={
-                  INTERVAL_PRESETS.some((o) => o.value === form.interval)
-                    ? INTERVAL_PRESETS
-                    : [{ value: form.interval, label: form.interval || '(unset)' }, ...INTERVAL_PRESETS]
+                  INTERVAL_PRESETS.some((option) => option.value === form.interval)
+                    ? INTERVAL_PRESETS.map((option) => ({ value: option.value, label: t(option.labelKey) }))
+                    : [{ value: form.interval, label: form.interval || t('wizard.unset') }, ...INTERVAL_PRESETS.map((option) => ({ value: option.value, label: t(option.labelKey) }))]
                 }
               />
             </>
@@ -519,24 +523,24 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
           {step === 4 && (
             <>
               <div className="flex flex-col gap-3.5">
-                <span className="text-[12.5px] font-semibold text-text-2">Safety caps</span>
+                <span className="text-[12.5px] font-semibold text-text-2">{t('wizard.safetyCaps')}</span>
                 <div className="grid grid-cols-2 gap-3">
                   <TextField
-                    label="Max additions / pass"
+                    label={t('wizard.maxAdds')}
                     type="number"
                     min={1}
                     value={form.max_adds}
                     onChange={(e) => setField('max_adds', e.target.value)}
-                    error={!maxAddsValid ? 'Enter a whole number of 1 or more.' : undefined}
+                    error={!maxAddsValid ? t('wizard.positiveInteger') : undefined}
                   />
                   {form.mirror_removals && (
                     <TextField
-                      label="Max removals / pass"
+                      label={t('wizard.maxRemovals')}
                       type="number"
                       min={1}
                       value={form.max_removals}
                       onChange={(e) => setField('max_removals', e.target.value)}
-                      error={!maxRemovalsValid ? 'Enter a whole number of 1 or more.' : undefined}
+                      error={!maxRemovalsValid ? t('wizard.positiveInteger') : undefined}
                     />
                   )}
                 </div>
@@ -545,8 +549,7 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                     ~
                   </span>
                   <p className="text-[12px] leading-relaxed text-text-2">
-                    A pass that would exceed a cap <span className="font-semibold text-text">holds</span> the excess
-                    instead of writing it. You'll see held rows in the feed and can review before anything is lost.
+                    {t('wizard.capHelp')}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -554,21 +557,17 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                     className="flex-1"
                     checked={form.mirror_removals}
                     onChange={(v) => setField('mirror_removals', v)}
-                    label="Mirror removals"
-                    description="Off (default): a track removed on one service is kept on the others — so a song losing licensing on one platform never disappears everywhere. On: removals sync too, capped per pass."
+                    label={t('wizard.mirrorRemovals')}
+                    description={t('wizard.mirrorRemovalsHelp')}
                   />
                   <Tooltip
                     content={
-                      <>
-                        A track removed on <span className="font-semibold text-text">any</span> service — including one
-                        quietly pulled by a licensing change — is deleted from all the others, and its downloaded copy
-                        goes too. Removals under the cap apply without review.
-                      </>
+                      t('wizard.removalWarning')
                     }
                   >
                     <button
                       type="button"
-                      aria-label="About mirroring removals"
+                      aria-label={t('wizard.aboutRemovals')}
                       className="cursor-help rounded-full p-1 text-text-3 transition-colors duration-fast hover:text-warning focus-visible:text-warning"
                     >
                       <LuInfo size={15} />
@@ -579,8 +578,8 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                   <Toggle
                     checked={form.apply_large_removals}
                     onChange={(v) => setField('apply_large_removals', v)}
-                    label="Apply large removals"
-                    description="Off (default): removals beyond the cap are held back for safety. On: they're deleted in capped batches over successive passes until cleared."
+                    label={t('wizard.largeRemovals')}
+                    description={t('wizard.largeRemovalsHelp')}
                   />
                 )}
               </div>
@@ -589,13 +588,13 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
                 <Toggle
                   checked={form.download}
                   onChange={(v) => setField('download', v)}
-                  label="Download this sync's playlists"
-                  description="Uses the folder and format configured in Settings → Download mirror."
+                  label={t('wizard.download')}
+                  description={t('wizard.downloadHelp')}
                 />
               </div>
 
               <div className="flex flex-col gap-2.5 rounded-control border border-border bg-surface-2/40 p-3.5">
-                <span className="font-mono text-[10px] font-semibold tracking-[0.1em] text-text-3">REVIEW</span>
+                <span className="font-mono text-[10px] font-semibold tracking-[0.1em] text-text-3">{t('wizard.review')}</span>
                 <dl className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2">
                   {summaryRows.map((row) => (
                     <Fragment key={row.label}>
@@ -617,12 +616,12 @@ export function SyncWizard({ open, onClose, job, accounts, onSaved }: Props) {
               icon={<LuArrowLeft className="size-4" aria-hidden="true" />}
               onClick={() => goToStep(step - 1)}
             >
-              Back
+              {t('wizard.back')}
             </Button>
           )}
           {!isLastStep && (
             <Button type="button" onClick={() => goToStep(step + 1)} disabled={!stepValid[step]} className="ml-auto">
-              Next
+              {t('wizard.next')}
               <LuArrowRight className="size-4" aria-hidden="true" />
             </Button>
           )}

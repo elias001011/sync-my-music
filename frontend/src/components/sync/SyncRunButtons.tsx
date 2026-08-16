@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import type { ButtonSize } from '@/components/ui/buttonStyles'
 import type { SyncJob } from '@/types'
+import { useI18n } from '@/i18n/useI18n'
 
 interface Props {
   job: SyncJob
@@ -24,6 +25,7 @@ interface Props {
  * way. Owns its own async/confirm state; `onChanged` just triggers the
  * caller's refresh. */
 export function SyncRunButtons({ job, disabled, onChanged, size = 'sm' }: Props) {
+  const { t } = useI18n()
   const [previewing, setPreviewing] = useState(false)
   const [runningNow, setRunningNow] = useState(false)
   const [confirmingRun, setConfirmingRun] = useState(false)
@@ -65,7 +67,7 @@ export function SyncRunButtons({ job, disabled, onChanged, size = 'sm' }: Props)
           onClick={() => setConfirmingRun(true)}
           disabled={disabled || previewing}
         >
-          Sync now
+          {t('sync.syncNow')}
         </Button>
         <Button
           variant="secondary"
@@ -75,16 +77,16 @@ export function SyncRunButtons({ job, disabled, onChanged, size = 'sm' }: Props)
           loading={previewing}
           disabled={disabled || runningNow}
         >
-          Preview
+          {t('sync.preview')}
         </Button>
       </div>
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <ConfirmDialog
         open={confirmingRun}
-        title={`Sync "${job.name}" now?`}
-        description="This applies real changes to your connected services right away, outside its normal schedule. Removals are still capped per pass."
-        confirmLabel="Sync now"
+        title={t('sync.runTitle', { name: job.name })}
+        description={t('sync.runDescription')}
+        confirmLabel={t('sync.syncNow')}
         danger
         loading={runningNow}
         onConfirm={() => void runNow()}

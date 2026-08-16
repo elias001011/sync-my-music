@@ -7,3 +7,5 @@ export interface I18nContextValue {
   setLocale: (locale: Locale) => void
   t: (key: MessageKey, values?: Record<string, string | number>) => string
 }
+
+export type Translate = I18nContextValue['t']

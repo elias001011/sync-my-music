@@ -2,6 +2,8 @@ import { LuCircleCheck, LuClock } from 'react-icons/lu'
 
 import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { localeTag, useI18n } from '@/i18n/useI18n'
+import type { Locale, Translate } from '@/i18n/types'
 import type { Account, SyncStatus } from '@/types'
 
 interface HeroProps {
@@ -12,38 +14,36 @@ interface HeroProps {
   displayName?: string
 }
 
-function timeOfDayGreeting(): string {
+function timeOfDayGreeting(t: Translate): string {
   const h = new Date().getHours()
-  if (h < 5) return 'Good night'
-  if (h < 12) return 'Good morning'
-  if (h < 18) return 'Good afternoon'
-  return 'Good evening'
-}
-
-function joinNames(names: string[]): string {
-  if (names.length === 1) return names[0]
-  if (names.length === 2) return `${names[0]} and ${names[1]}`
-  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+  if (h < 5) return t('dashboard.goodNight')
+  if (h < 12) return t('dashboard.goodMorning')
+  if (h < 18) return t('dashboard.goodAfternoon')
+  return t('dashboard.goodEvening')
 }
 
 /** Plain-language summary of account health — never a fabricated "last
  * synced" claim, only what `useAccounts()` actually reports. */
-function heroCopy(accounts: Account[] | null): { headline: string; detail: string } {
+function heroCopy(accounts: Account[] | null, t: Translate, locale: Locale): { headline: string; detail: string } {
   if (!accounts || accounts.length === 0) {
-    return { headline: 'Nothing connected yet.', detail: 'Connect a service on the Accounts page to get started.' }
+    return { headline: t('dashboard.nothingConnected'), detail: t('dashboard.connectToStart') }
   }
   const connected = accounts.filter((a) => a.state === 'connected')
   const problems = accounts.filter((a) => a.state !== 'connected')
   if (problems.length === 0) {
-    return { headline: "Everything's in sync.", detail: `All ${accounts.length} of your connected services are up to date.` }
+    return { headline: t('dashboard.everythingInSync'), detail: t('dashboard.allServicesUpToDate', { count: accounts.length }) }
   }
   if (connected.length === 0) {
-    return { headline: "Nothing's connected yet.", detail: 'Connect a service on the Accounts page to start syncing.' }
+    return { headline: t('dashboard.noneConnected'), detail: t('dashboard.connectToSync') }
   }
-  const names = joinNames(problems.map((p) => p.name))
+  const names = new Intl.ListFormat(localeTag(locale), { style: 'long', type: 'conjunction' }).format(problems.map((problem) => problem.name))
   return {
-    headline: "Almost everything's in sync.",
-    detail: `${connected.length} of ${accounts.length} services are up to date. ${names} need${problems.length === 1 ? 's' : ''} attention. Only the syncs that touch ${problems.length === 1 ? 'it' : 'them'} are affected.`,
+    headline: t('dashboard.almostInSync'),
+    detail: t(problems.length === 1 ? 'dashboard.serviceNeedsAttention' : 'dashboard.servicesNeedAttention', {
+      connected: connected.length,
+      total: accounts.length,
+      names,
+    }),
   }
 }
 
@@ -52,11 +52,11 @@ function heroCopy(accounts: Account[] | null): { headline: string; detail: strin
  * fabricated "N min ago". A failed/preview pass may have no recorded
  * duration — formatDuration returns null for that, and the "· took …"
  * fragment is omitted entirely rather than printing a NaN-shaped string. */
-function lastRunText(status: SyncStatus | null): string {
-  if (!status?.last) return 'No sync has run yet'
-  const kind = status.last.execute ? 'applied changes' : 'was a preview'
+function lastRunText(status: SyncStatus | null, t: Translate): string {
+  if (!status?.last) return t('dashboard.noRunYet')
+  const text = t(status.last.execute ? 'dashboard.lastApplied' : 'dashboard.lastPreview')
   const duration = formatDuration(status.last.duration_s)
-  return duration ? `Last run ${kind} · took ${duration}` : `Last run ${kind}`
+  return duration ? t('dashboard.took', { text, duration }) : text
 }
 
 /** The dashboard's opening read: "how are things" in one sentence, framed by
@@ -64,6 +64,7 @@ function lastRunText(status: SyncStatus | null): string {
  * there's no per-track progress signal in the API, so unlike the mockup this
  * never claims a fake "N of M checked" percentage. */
 export function Hero({ accounts, status, displayName }: HeroProps) {
+  const { locale, t } = useI18n()
   if (status?.running) {
     const previewing = status.mode === 'preview'
     const runningJobName = status.jobs.find((j) => j.id === status.running_job)?.name
@@ -71,35 +72,35 @@ export function Hero({ accounts, status, displayName }: HeroProps) {
       <div className="flex flex-1 flex-col justify-center gap-3">
         <span className="inline-flex items-center gap-2 font-mono text-[11px] font-bold tracking-[0.14em] text-accent">
           <span className="size-2 animate-pulse rounded-full bg-accent" aria-hidden="true" />
-          {previewing ? 'PREVIEWING NOW' : 'SYNCING NOW'}
+          {t(previewing ? 'dashboard.previewingNow' : 'dashboard.syncingNow')}
         </span>
         <h1 className="text-display text-[26px] text-text sm:text-[32px]">
           {previewing
             ? runningJobName
-              ? `Previewing "${runningJobName}"…`
-              : 'Previewing your libraries…'
+              ? t('dashboard.previewingJob', { name: runningJobName })
+              : t('dashboard.previewingLibraries')
             : runningJobName
-              ? `Syncing "${runningJobName}"…`
-              : 'Syncing your libraries…'}
+              ? t('dashboard.syncingJob', { name: runningJobName })
+              : t('dashboard.syncingLibraries')}
         </h1>
         <p className="flex items-center gap-2 text-sm text-text-2">
           <LuClock className="size-4 shrink-0 text-text-3" aria-hidden="true" />
           {previewing
-            ? 'A dry run: checking what would change, without touching your libraries.'
-            : 'You can leave this page. It keeps running in the background.'}
+            ? t('dashboard.previewHelp')
+            : t('dashboard.syncHelp')}
         </p>
       </div>
     )
   }
 
-  const { headline, detail } = heroCopy(accounts)
+  const { headline, detail } = heroCopy(accounts, t, locale)
   const connectedCount = accounts?.filter((a) => a.state === 'connected').length ?? 0
   const allUp = Boolean(accounts?.length) && connectedCount === accounts?.length
 
   return (
     <div className="flex flex-1 flex-col justify-center gap-3.5">
       <span className="font-mono text-[11px] font-bold tracking-[0.14em] text-text-3">
-        {timeOfDayGreeting().toUpperCase()}
+        {timeOfDayGreeting(t).toUpperCase()}
         {displayName?.trim() ? `, ${displayName.trim().toUpperCase()}` : ''}
       </span>
       <h1 className="max-w-[16ch] text-[32px] font-extrabold leading-[1.05] tracking-tight text-text sm:text-[40px]">{headline}</h1>
@@ -107,14 +108,14 @@ export function Hero({ accounts, status, displayName }: HeroProps) {
       <div className="mt-0.5 flex flex-wrap items-center gap-3 text-[13px] text-text-3">
         <span className="inline-flex items-center gap-1.5">
           <LuClock className="size-[15px] shrink-0" aria-hidden="true" />
-          {lastRunText(status)}
+          {lastRunText(status, t)}
         </span>
         {accounts && accounts.length > 0 && (
           <>
             <span className="size-1 shrink-0 rounded-full bg-border-strong" aria-hidden="true" />
             <span className={cn('inline-flex items-center gap-1.5', allUp && 'text-success')}>
               <LuCircleCheck className="size-[15px] shrink-0" aria-hidden="true" />
-              {connectedCount} of {accounts.length} up to date
+              {t('dashboard.upToDateCount', { connected: connectedCount, total: accounts.length })}
             </span>
           </>
         )}

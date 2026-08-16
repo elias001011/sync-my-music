@@ -4,6 +4,8 @@ import { LuCircleAlert, LuTriangleAlert, LuX } from 'react-icons/lu'
 import type { IconType } from 'react-icons'
 
 import type { Account, SyncStatus } from '@/types'
+import type { Translate } from '@/i18n/types'
+import { useI18n } from '@/i18n/useI18n'
 
 import { BUTTON_BASE_CLASSES, BUTTON_SIZE_CLASSES, BUTTON_VARIANT_CLASSES } from '../ui/buttonStyles'
 
@@ -31,7 +33,7 @@ interface NeedsLookItem {
 /** Every item here traces back to a real field — account state/detail, or the
  * last pass's own ok flag and per-target held/deferred/removals-skipped counts.
  * Nothing is invented (no fabricated "last synced" claims). */
-function buildItems(accounts: Account[] | null, status: SyncStatus | null): NeedsLookItem[] {
+function buildItems(accounts: Account[] | null, status: SyncStatus | null, t: Translate): NeedsLookItem[] {
   const items: NeedsLookItem[] = []
 
   for (const a of accounts ?? []) {
@@ -39,25 +41,25 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
       items.push({
         key: `acct-${a.id}`,
         icon: LuTriangleAlert,
-        title: `${a.name} sign-in expired`,
-        description: a.detail || 'Reconnect to resume the syncs that touch it.',
-        action: { label: 'Reconnect', to: '/accounts' },
+        title: t('dashboard.signInExpired', { name: a.name }),
+        description: a.detail || t('dashboard.reconnectHelp'),
+        action: { label: t('dashboard.reconnect'), to: '/accounts' },
       })
     } else if (a.state === 'error') {
       items.push({
         key: `acct-${a.id}`,
         icon: LuCircleAlert,
-        title: `${a.name} connection error`,
-        description: a.detail || 'Passes skip this service until the error clears.',
-        action: { label: 'Fix', to: '/accounts' },
+        title: t('dashboard.connectionError', { name: a.name }),
+        description: a.detail || t('dashboard.connectionErrorHelp'),
+        action: { label: t('dashboard.fix'), to: '/accounts' },
       })
     } else if (a.state === 'unconfigured') {
       items.push({
         key: `acct-${a.id}`,
         icon: LuTriangleAlert,
-        title: `${a.name} isn't set up`,
-        description: a.detail || "Connect it to include it in syncs. It's skipped until then.",
-        action: { label: 'Connect', to: '/accounts' },
+        title: t('dashboard.notSetUp', { name: a.name }),
+        description: a.detail || t('dashboard.notSetUpHelp'),
+        action: { label: t('dashboard.connect'), to: '/accounts' },
       })
     }
   }
@@ -66,8 +68,8 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
     items.push({
       key: 'last-pass-error',
       icon: LuCircleAlert,
-      title: 'The last pass failed',
-      description: status.last.error || "It didn't complete successfully. The services it reached are unaffected.",
+      title: t('dashboard.lastPassFailed'),
+      description: status.last.error || t('dashboard.lastPassFailedHelp'),
     })
   }
 
@@ -78,13 +80,13 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
     const listed = status?.last?.per_target.flatMap((t) => t.failures ?? []) ?? []
     const details = listed.slice(0, FAILURE_PREVIEW).map((f) => `${f.playlist}: ${f.error}`)
     if (listed.length > details.length) {
-      details.push(`+${listed.length - details.length} more`)
+      details.push(t('dashboard.more', { count: listed.length - details.length }))
     }
     items.push({
       key: 'playlists-failed',
       icon: LuCircleAlert,
-      title: `${failedTotal} playlist${failedTotal === 1 ? '' : 's'} failed to sync`,
-      description: 'The rest of the pass finished. These were left exactly as they were and are retried next pass.',
+      title: t(failedTotal === 1 ? 'dashboard.playlistFailed' : 'dashboard.playlistsFailed', { count: failedTotal }),
+      description: t('dashboard.failedHelp'),
       details,
     })
   }
@@ -94,12 +96,9 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
     items.push({
       key: 'isrc-fallback',
       icon: LuTriangleAlert,
-      title: `${isrcFallback} ISRC lookup${isrcFallback === 1 ? '' : 's'} ran on the slow path`,
-      description:
-        'No extended-quota ISRC app could serve the batch endpoint, so cross-service matching looked these up ' +
-        'one call at a time. That path is capped at roughly 300 tracks a day, and the sync stops rather than ' +
-        'guess once it runs out. Connect one to restore 50-per-call batching.',
-      action: { label: 'Connect app', to: '/accounts' },
+      title: t(isrcFallback === 1 ? 'dashboard.isrcFallback' : 'dashboard.isrcFallbacks', { count: isrcFallback }),
+      description: t('dashboard.isrcFallbackHelp'),
+      action: { label: t('dashboard.connectApp'), to: '/accounts' },
     })
   }
 
@@ -108,9 +107,9 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
     items.push({
       key: 'held',
       icon: LuTriangleAlert,
-      title: `${heldTotal} change${heldTotal === 1 ? '' : 's'} held from the last pass`,
-      description: 'A service needs a follow-up pass — an unmatched track was kept, or additions exceeded the cap. Nothing was lost.',
-      action: { label: 'Review caps', to: '/sync' },
+      title: t(heldTotal === 1 ? 'dashboard.changeHeld' : 'dashboard.changesHeld', { count: heldTotal }),
+      description: t('dashboard.heldHelp'),
+      action: { label: t('dashboard.reviewCaps'), to: '/sync' },
     })
   }
 
@@ -124,17 +123,17 @@ function buildItems(accounts: Account[] | null, status: SyncStatus | null): Need
       .slice(0, HELD_REMOVAL_PREVIEW)
       .map((h) => `${h.track}${h.artist ? ` — ${h.artist}` : ''} · ${h.playlist} on ${h.target}`)
     if (listed.length > details.length) {
-      details.push(`+${listed.length - details.length} more`)
+      details.push(t('dashboard.more', { count: listed.length - details.length }))
     }
     items.push({
       key: 'removals-skipped',
       icon: LuTriangleAlert,
-      title: `${removalsSkipped} removal${removalsSkipped === 1 ? '' : 's'} held back for safety`,
+      title: t(removalsSkipped === 1 ? 'dashboard.removalHeld' : 'dashboard.removalsHeld', { count: removalsSkipped }),
       description: reasons.length
-        ? `These are still on the services below. Held because ${reasons.join('; and ')}.`
-        : 'Tracks left a playlist on one service, and this sync isn\'t allowed to delete that many elsewhere. Turn on "Mirror removals" (and raise its cap) on the sync if you want them to follow.',
+        ? t('dashboard.removalsReasons', { reasons: reasons.join('; ') })
+        : t('dashboard.removalsDefault'),
       details,
-      action: { label: 'Open sync', to: '/sync' },
+      action: { label: t('dashboard.openSync'), to: '/sync' },
     })
   }
 
@@ -170,8 +169,9 @@ function loadDismissed(): string[] {
  * flag rather than showing an empty section. Each card can be dismissed; the
  * dismissal persists across reloads until that situation changes or clears. */
 export function NeedsALook({ accounts, status }: { accounts: Account[] | null; status: SyncStatus | null }) {
+  const { t } = useI18n()
   const [dismissed, setDismissed] = useState<string[]>(loadDismissed)
-  const items = buildItems(accounts, status)
+  const items = buildItems(accounts, status, t)
   const live = items.map(signature).join('\n')
   // Both sources must have answered before "this item is gone" means anything —
   // while they're still in flight there are no items at all, and pruning then
@@ -204,7 +204,7 @@ export function NeedsALook({ accounts, status }: { accounts: Account[] | null; s
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2.5">
-        <h2 className="text-base font-extrabold tracking-tight text-text">Needs a look</h2>
+        <h2 className="text-base font-extrabold tracking-tight text-text">{t('dashboard.needsLook')}</h2>
         <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-chip bg-warning-soft px-1.5 font-mono text-xs font-bold text-warning">
           {visible.length}
         </span>
@@ -250,8 +250,8 @@ export function NeedsALook({ accounts, status }: { accounts: Account[] | null; s
             <button
               type="button"
               onClick={() => setDismissed((prev) => [...prev, signature(item)])}
-              title="Dismiss"
-              aria-label={`Dismiss: ${item.title}`}
+              title={t('dashboard.dismiss')}
+              aria-label={t('dashboard.dismissItem', { title: item.title })}
               className="flex size-7 shrink-0 items-center justify-center rounded-control text-text-3 transition-colors duration-fast hover:bg-surface-2 hover:text-text"
             >
               <LuX className="size-4" aria-hidden="true" />

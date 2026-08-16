@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { LuArrowRight } from 'react-icons/lu'
 
 import { serviceLogoId, tagDot, tagText } from '@/lib/constants'
+import { useI18n } from '@/i18n/useI18n'
 import { cn } from '@/lib/cn'
 import type { Account, SyncStatus } from '@/types'
 
@@ -15,12 +16,13 @@ import { StatusPill } from '../ui/StatusPill'
  * the API); where the last pass touched a service, its real add/remove
  * counts from that pass show instead. */
 export function YourServices({ accounts, status }: { accounts: Account[] | null; status: SyncStatus | null }) {
+  const { t } = useI18n()
   return (
     <Card className="flex flex-col overflow-hidden">
       <div className="flex items-center justify-between p-4">
-        <h2 className="text-[15px] font-extrabold text-text">Your services</h2>
+        <h2 className="text-[15px] font-extrabold text-text">{t('dashboard.yourServices')}</h2>
         <Link to="/accounts" className="inline-flex items-center gap-1 text-[12.5px] font-semibold text-accent hover:text-accent-hover">
-          Manage
+          {t('dashboard.manage')}
           <LuArrowRight className="size-3.5" aria-hidden="true" />
         </Link>
       </div>
@@ -50,7 +52,7 @@ export function YourServices({ accounts, status }: { accounts: Account[] | null;
         </ul>
       ) : (
         <div className="px-4 pb-4">
-          <EmptyState title="No connectors available" description="This installation has no configured services." />
+          <EmptyState title={t('accounts.emptyTitle')} description={t('accounts.emptyDescription')} />
         </div>
       )}
     </Card>

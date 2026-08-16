@@ -4,6 +4,7 @@ import type { ProviderPlaylistsEntry } from '@/hooks/useProviderPlaylists'
 import { cn } from '@/lib/cn'
 import { serviceLogoId, tagText } from '@/lib/constants'
 import { formatTrackCount } from '@/lib/format'
+import { useI18n } from '@/i18n/useI18n'
 import type { Account } from '@/types'
 
 import { Card } from '../ui/Card'
@@ -17,6 +18,7 @@ import { BUTTON_BASE_CLASSES, BUTTON_SIZE_CLASSES, BUTTON_VARIANT_CLASSES } from
 /** One provider's playlists for the Browse section. Handles all four states
  * explicitly: not connected, loading, errored, and loaded (possibly empty). */
 export function ProviderPlaylistsCard({ account, entry }: { account: Account; entry: ProviderPlaylistsEntry | undefined }) {
+  const { t } = useI18n()
   const connected = account.state === 'connected'
   const logoId = serviceLogoId(account.id)
 
@@ -33,7 +35,7 @@ export function ProviderPlaylistsCard({ account, entry }: { account: Account; en
           <h3 className="min-w-0 flex-1 truncate text-base font-bold text-text">{account.name}</h3>
           {connected && entry && entry.playlists.length > 0 && (
             <span className="shrink-0 font-mono text-[11px] text-text-3">
-              {entry.playlists.length} playlist{entry.playlists.length === 1 ? '' : 's'}
+              {t(entry.playlists.length === 1 ? 'playlists.countOne' : 'playlists.count', { count: entry.playlists.length })}
             </span>
           )}
         </div>
@@ -43,16 +45,16 @@ export function ProviderPlaylistsCard({ account, entry }: { account: Account; en
       {!connected ? (
         <EmptyState
           className="py-6"
-          title="Nothing to browse yet."
-          description="Connect this service and its playlists appear here, ready for pairing."
+          title={t('playlists.nothingToBrowse')}
+          description={t('playlists.connectToBrowse')}
           action={
             <Link to="/accounts" className={cn(BUTTON_BASE_CLASSES, BUTTON_SIZE_CLASSES.sm, BUTTON_VARIANT_CLASSES.primary)}>
-              Connect
+              {t('dashboard.connect')}
             </Link>
           }
         />
       ) : !entry || (entry.loading && entry.playlists.length === 0) ? (
-        <LoadingStatus label={`Loading ${account.name} playlists…`}>
+        <LoadingStatus label={t('playlists.loadingProvider', { name: account.name })}>
           <div className="flex flex-col gap-2">
             <Skeleton className="h-9 w-full" />
             <Skeleton className="h-9 w-full" />
@@ -60,7 +62,7 @@ export function ProviderPlaylistsCard({ account, entry }: { account: Account; en
           </div>
         </LoadingStatus>
       ) : entry.error ? (
-        <p className="text-sm text-danger">Could not load playlists: {entry.error}</p>
+        <p className="text-sm text-danger">{t('playlists.providerLoadError', { error: entry.error })}</p>
       ) : entry.playlists.length > 0 ? (
         <ul className="thin-scrollbar flex max-h-80 flex-col divide-y divide-border overflow-y-auto">
           {entry.playlists.map((p, i) => (
@@ -77,7 +79,7 @@ export function ProviderPlaylistsCard({ account, entry }: { account: Account; en
           ))}
         </ul>
       ) : (
-        <EmptyState className="py-6" title="No playlists found" description="This service doesn't have any playlists yet." />
+        <EmptyState className="py-6" title={t('playlists.noneFound')} description={t('playlists.noneFoundHelp')} />
       )}
     </Card>
   )

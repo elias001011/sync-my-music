@@ -3,6 +3,7 @@ import { LuPause, LuPlay, LuSquare } from 'react-icons/lu'
 
 import { api, errorMessage } from '@/api'
 import { Button } from '@/components/ui/Button'
+import { useI18n } from '@/i18n/useI18n'
 
 interface Props {
   jobId: string
@@ -23,6 +24,7 @@ interface Props {
  * effect at the next checkpoint (mid-playlist), so while it's pending the button
  * reflects that rather than looking like nothing happened. */
 export function SyncControls({ jobId, running, paused, pending, onChanged, onError }: Props) {
+  const { t } = useI18n()
   const [busy, setBusy] = useState(false)
 
   async function control(action: 'pause' | 'stop' | 'resume') {
@@ -49,7 +51,7 @@ export function SyncControls({ jobId, running, paused, pending, onChanged, onErr
           icon={<LuPause className="size-3.5" aria-hidden="true" />}
           onClick={() => void control('pause')}
         >
-          {pending === 'pause' ? 'Pausing…' : 'Pause'}
+          {pending === 'pause' ? t('sync.pausing') : t('sync.pause')}
         </Button>
         <Button
           variant="secondary"
@@ -58,7 +60,7 @@ export function SyncControls({ jobId, running, paused, pending, onChanged, onErr
           icon={<LuSquare className="size-3.5" aria-hidden="true" />}
           onClick={() => void control('stop')}
         >
-          {pending === 'stop' ? 'Stopping…' : 'Stop'}
+          {pending === 'stop' ? t('sync.stopping') : t('sync.stop')}
         </Button>
       </>
     )
@@ -72,7 +74,7 @@ export function SyncControls({ jobId, running, paused, pending, onChanged, onErr
         icon={<LuPlay className="size-3.5" aria-hidden="true" />}
         onClick={() => void control('resume')}
       >
-        Resume
+        {t('sync.resume')}
       </Button>
     )
   }

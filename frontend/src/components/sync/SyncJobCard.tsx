@@ -8,6 +8,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { Toggle } from '@/components/ui/Toggle'
 import { cn } from '@/lib/cn'
 import { buildSyncSummaryRows } from '@/lib/syncSummary'
+import { useI18n } from '@/i18n/useI18n'
 import type { Account, SyncJob } from '@/types'
 
 import { SyncControls } from './SyncControls'
@@ -41,6 +42,7 @@ interface Props {
  * place the job's actual config fields are changed; this card is for
  * at-a-glance management. */
 export function SyncJobCard({ job, peers, running, queued, paused, pending, onEdit, onChanged }: Props) {
+  const { t } = useI18n()
   const [togglingEnabled, setTogglingEnabled] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -92,30 +94,30 @@ export function SyncJobCard({ job, peers, running, queued, paused, pending, onEd
             {running && (
               <span className="inline-flex h-[22px] shrink-0 items-center gap-1.5 rounded-full bg-accent-soft px-2 text-[11px] font-semibold text-accent">
                 <Spinner className="size-3 shrink-0" aria-hidden="true" />
-                Running
+                {t('sync.running')}
               </span>
             )}
             {queued && !running && (
               <span className="inline-flex h-[22px] shrink-0 items-center gap-1.5 rounded-full bg-neutral-soft px-2 text-[11px] font-semibold text-neutral">
                 <LuClock className="size-3 shrink-0" aria-hidden="true" />
-                Queued
+                {t('sync.queued')}
               </span>
             )}
             {!job.enabled && (
               <span className="inline-flex h-[22px] shrink-0 items-center rounded-full bg-neutral-soft px-2.5 text-[11.5px] font-semibold text-neutral">
-                paused
+                {t('sync.paused')}
               </span>
             )}
           </div>
           <p className="mt-1 text-[13px] leading-relaxed text-text-2">{summary}</p>
           <p className="mt-1.5 font-mono text-[10.5px] tracking-wide text-text-3">
-            {job.enabled ? `every ${job.interval}` : 'manual only'}
+            {job.enabled ? t('sync.every', { interval: job.interval }) : t('sync.manualOnly')}
           </p>
         </div>
         <Toggle
           checked={job.enabled}
           onChange={() => void toggleEnabled()}
-          label={job.enabled ? `Pause "${job.name}"` : `Resume "${job.name}"`}
+          label={job.enabled ? t('sync.pauseJob', { name: job.name }) : t('sync.resumeJob', { name: job.name })}
           hideLabel
           disabled={togglingEnabled}
         />
@@ -127,7 +129,7 @@ export function SyncJobCard({ job, peers, running, queued, paused, pending, onEd
         <SyncRunButtons job={job} disabled={running || queued} onChanged={onChanged} />
         <SyncControls jobId={job.id} running={running} paused={paused} pending={pending} onChanged={onChanged} onError={setError} />
         <Button variant="secondary" size="sm" icon={<LuPencil className="size-3.5" aria-hidden="true" />} onClick={onEdit}>
-          Edit
+          {t('sync.edit')}
         </Button>
         <Button
           variant="ghost"
@@ -136,15 +138,15 @@ export function SyncJobCard({ job, peers, running, queued, paused, pending, onEd
           icon={<LuTrash2 className="size-3.5" aria-hidden="true" />}
           onClick={() => setConfirmingDelete(true)}
         >
-          Delete
+          {t('sync.delete')}
         </Button>
       </div>
 
       <ConfirmDialog
         open={confirmingDelete}
-        title={`Delete "${job.name}"?`}
-        description="This removes the sync configuration. Playlists and tracks already on each service are untouched."
-        confirmLabel="Delete"
+        title={t('sync.deleteTitle', { name: job.name })}
+        description={t('sync.deleteDescription')}
+        confirmLabel={t('sync.delete')}
         danger
         loading={deleting}
         onConfirm={() => void handleDelete()}

@@ -3,6 +3,7 @@ import { LuClock, LuPlay } from 'react-icons/lu'
 
 import { api, errorMessage } from '@/api'
 import { useNow } from '@/hooks/useNow'
+import { useI18n } from '@/i18n/useI18n'
 import { formatClockTime, formatCountdown } from '@/lib/format'
 import type { SyncStatus } from '@/types'
 
@@ -22,6 +23,7 @@ interface Props {
  * this card only keeps a small, secondary "Run all enabled" for a
  * one-click catch-all. */
 export function SyncControlCard({ status, onQueued }: Props) {
+  const { t } = useI18n()
   const [confirmingRunAll, setConfirmingRunAll] = useState(false)
   const [runningAll, setRunningAll] = useState(false)
   const [scheduleBusy, setScheduleBusy] = useState(false)
@@ -61,7 +63,7 @@ export function SyncControlCard({ status, onQueued }: Props) {
       <div className="flex items-center justify-between">
         <span className="inline-flex items-center gap-1.5 text-[13px] text-text-3">
           <LuClock className="size-[15px] shrink-0" aria-hidden="true" />
-          Next check
+          {t('dashboard.nextCheck')}
         </span>
         {status?.scheduled && status.next_run_at ? (
           <span className="text-[13.5px] font-bold text-text">
@@ -69,24 +71,24 @@ export function SyncControlCard({ status, onQueued }: Props) {
             <span className="font-mono text-[11px] font-normal text-text-3">· {formatCountdown(status.next_run_at, now)}</span>
           </span>
         ) : (
-          <span className="text-[13px] font-medium text-text-3">Auto-sync paused</span>
+          <span className="text-[13px] font-medium text-text-3">{t('dashboard.autoSyncPaused')}</span>
         )}
       </div>
 
       <div className="flex items-center gap-2.5 border-t border-border pt-3">
         <span className="flex-1 text-[13px] font-medium text-text">
-          {status?.master ? 'Auto-sync: on' : 'Auto-sync: paused'}
+          {status?.master ? t('dashboard.autoSyncOn') : t('dashboard.autoSyncPaused')}
         </span>
         <Toggle
           checked={Boolean(status?.master)}
           onChange={() => void toggleMaster()}
-          label={status?.master ? 'Pause automatic sync' : 'Resume automatic sync'}
+          label={status?.master ? t('dashboard.pauseAutoSync') : t('dashboard.resumeAutoSync')}
           hideLabel
           disabled={scheduleBusy || !status}
         />
       </div>
       <p className="text-xs leading-relaxed text-text-3">
-        Each sync keeps its own schedule. This switch is the master on/off for all of them at once.
+        {t('dashboard.autoSyncHelp')}
       </p>
 
       {error && <p className="text-sm text-danger">{error}</p>}
@@ -99,14 +101,14 @@ export function SyncControlCard({ status, onQueued }: Props) {
         onClick={() => setConfirmingRunAll(true)}
         disabled={!status || status.running}
       >
-        Run all enabled now
+        {t('dashboard.runAllEnabled')}
       </Button>
 
       <ConfirmDialog
         open={confirmingRunAll}
-        title="Run every enabled sync now?"
-        description="This applies real changes to your connected services right away, outside each sync's normal schedule. Removals are still capped per pass."
-        confirmLabel="Run all"
+        title={t('dashboard.runAllTitle')}
+        description={t('dashboard.runAllDescription')}
+        confirmLabel={t('dashboard.runAllConfirm')}
         danger
         loading={runningAll}
         onConfirm={() => void runAll()}
