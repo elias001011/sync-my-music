@@ -54,7 +54,12 @@ class SyncService:
 
     # -- running ---------------------------------------------------------------
     def _opts_for(self, job, execute):
-        """Build engine Options from a job + the global download mirror."""
+        """Build engine Options from a job + the global download mirror.
+
+        Account-scoped jobs pass each account's own config snapshot to the
+        engine (never os.environ): credentials, session files and caches stay
+        isolated per account, so two accounts of the same provider can run side
+        by side without clobbering each other."""
         self._settings.apply_to_env()
         opts = parse_args([])
         opts.execute = execute
@@ -65,6 +70,17 @@ class SyncService:
         opts.max_adds = job.max_adds
         opts.max_removals = job.max_removals
         opts.apply_large_removals = job.apply_large_removals
+        opts.accounts = {}
+        opts.account_configs = {}
+        for account_id in job.account_list:
+            provider = str(account_id).split(":", 1)[0]
+            disabled = {item.strip() for item in str(self._settings.get("DISABLED_PROVIDERS") or "").split(",") if item.strip()}
+            if provider in disabled:
+                continue
+            if not self._settings.account_enabled(account_id):
+                continue
+            opts.accounts[account_id] = provider
+            opts.account_configs[account_id] = self._settings.account_config_snapshot(account_id)
         # SONGMIRROR_DOWNLOAD_DIR (a container-internal bind-mount path set by
         # docker-compose) wins over the UI-saved DOWNLOAD_DIR: inside the
         # container that UI value can be a host path (e.g. a Windows F:\ path)

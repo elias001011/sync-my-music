@@ -5,10 +5,21 @@ import { api, errorMessage } from '@/api'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { cn } from '@/lib/cn'
-import type { Recap, RecapHistory } from '@/types'
+import type { LibraryAccount, Recap, RecapHistory } from '@/types'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/** One toggle chip in the account filter row; empty selection = unified recap. */
+function AccountChip({ account, selected, onToggle }: { account: LibraryAccount; selected: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" onClick={onToggle}
+      className={cn('rounded-full border px-3 py-1.5 text-xs transition',
+        selected ? 'border-accent bg-accent-soft text-accent' : 'border-border bg-surface-2 text-text-2 hover:border-accent/60 hover:text-text')}>
+      {account.label}
+    </button>
+  )
+}
 
 function Stats({ recap }: { recap: Recap | null }) {
   return (
@@ -36,15 +47,31 @@ export default function Recaps() {
   const [history, setHistory] = useState<RecapHistory | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null)
   const [monthRecap, setMonthRecap] = useState<Recap | null>(null)
+  const [accounts, setAccounts] = useState<LibraryAccount[]>([])
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+
+  // Accounts available for the filter; empty selection = unified recap.
+  useEffect(() => {
+    let active = true
+    api.getLibraryAccounts()
+      .then((rows) => { if (active) setAccounts(rows) })
+      .catch(() => { /* the recap itself stays usable without the filter */ })
+    return () => { active = false }
+  }, [])
+
+  function toggleAccount(accountId: string) {
+    setSelectedAccounts((current) =>
+      current.includes(accountId) ? current.filter((id) => id !== accountId) : [...current, accountId])
+  }
 
   useEffect(() => {
     let active = true
-    api.getRecapHistory()
+    api.getRecapHistory(selectedAccounts)
       .then((next) => { if (active) setHistory(next) })
       .catch((err: unknown) => { if (active) setError(errorMessage(err)) })
     return () => { active = false }
-  }, [])
+  }, [selectedAccounts])
 
   useEffect(() => {
     setError(null)
@@ -52,21 +79,21 @@ export default function Recaps() {
     setSelectedMonth(null)
     setMonthRecap(null)
     let active = true
-    api.getRecap(year)
+    api.getRecap(year, undefined, selectedAccounts)
       .then((next) => { if (active) setRecap(next) })
       .catch((err: unknown) => { if (active) setError(errorMessage(err)) })
     return () => { active = false }
-  }, [year])
+  }, [year, selectedAccounts])
 
   useEffect(() => {
     if (!selectedMonth) return
     setMonthRecap(null)
     let active = true
-    api.getRecap(year, selectedMonth)
+    api.getRecap(year, selectedMonth, selectedAccounts)
       .then((next) => { if (active) setMonthRecap(next) })
       .catch((err: unknown) => { if (active) setError(errorMessage(err)) })
     return () => { active = false }
-  }, [selectedMonth, year])
+  }, [selectedMonth, year, selectedAccounts])
 
   const annualMonths = useMemo(
     () => MONTHS.map((label, index) => ({
@@ -102,6 +129,24 @@ export default function Recaps() {
 
       {error && <p className="rounded-control bg-danger-soft p-3 text-sm text-danger">{error}</p>}
 
+      {accounts.length > 0 && (
+        <Card className="flex flex-wrap items-center gap-2 p-3">
+          <span className="font-mono text-[10px] font-bold tracking-[0.12em] text-text-3">FILTER BY ACCOUNT</span>
+          <button type="button" onClick={() => setSelectedAccounts([])}
+            className={cn('rounded-full border px-3 py-1.5 text-xs transition',
+              selectedAccounts.length === 0 ? 'border-accent bg-accent-soft text-accent' : 'border-border bg-surface-2 text-text-2 hover:text-text')}>
+            All accounts
+          </button>
+          {accounts.map((account) => (
+            <AccountChip key={account.id} account={account} selected={selectedAccounts.includes(account.id)}
+              onToggle={() => toggleAccount(account.id)} />
+          ))}
+          {selectedAccounts.length > 0 && (
+            <span className="ml-auto text-xs text-text-3">Totals below only include the {selectedAccounts.length} selected account{selectedAccounts.length > 1 ? 's' : ''}.</span>
+          )}
+        </Card>
+      )}
+
       <div>
         <span className="font-mono text-[10px] font-bold tracking-[0.14em] text-text-3">{year} OVERVIEW</span>
         <div className="mt-3"><Stats recap={recap} /></div>
@@ -136,8 +181,11 @@ export default function Recaps() {
         <Card className="p-4 sm:p-5">
           <h2 className="mb-3 text-sm font-bold text-text">Services</h2>
           {recap?.services.length ? <div className="flex flex-col gap-3">{recap.services.map((service) => (
-            <div key={service.source}>
-              <div className="mb-1 flex justify-between text-xs"><span className="capitalize text-text-2">{service.source}</span><span className="font-mono text-text-3">{service.plays} plays</span></div>
+            <div key={`${service.account_id ?? 'none'}-${service.source}`}>
+              <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
+                <span className="min-w-0"><span className="font-semibold capitalize text-text-2">{service.account_label ?? service.source}</span><span className="ml-2 font-mono text-[10px] text-text-3">{service.source}</span></span>
+                <span className="font-mono text-text-3">{service.plays} plays</span>
+              </div>
               <div className="h-2 overflow-hidden rounded-full bg-inset"><div className="h-full rounded-full bg-accent" style={{ width: `${service.plays / Math.max(1, recap.plays) * 100}%` }} /></div>
             </div>
           ))}</div> : <p className="py-10 text-center text-sm text-text-3">Sources appear here as listening events arrive.</p>}
@@ -170,7 +218,7 @@ export default function Recaps() {
           <Stats recap={monthRecap} />
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="p-4"><h3 className="mb-2 text-sm font-bold text-text">Top tracks this month</h3>{monthRecap?.top_tracks.length ? <ol className="divide-y divide-border">{monthRecap.top_tracks.slice(0, 5).map((track, index) => <li key={track.id} className="flex gap-3 py-2 text-xs"><span className="font-mono text-text-3">{index + 1}</span><span className="min-w-0 flex-1 truncate text-text-2">{track.title} · {track.artist}</span><span className="font-mono text-text-3">{track.plays}</span></li>)}</ol> : <p className="py-5 text-center text-xs text-text-3">No listens imported for this month.</p>}</Card>
-            <Card className="p-4"><h3 className="mb-2 text-sm font-bold text-text">Services this month</h3>{monthRecap?.services.length ? <div className="flex flex-col gap-2">{monthRecap.services.map((service) => <div key={service.source} className="flex justify-between text-xs"><span className="capitalize text-text-2">{service.source}</span><span className="font-mono text-text-3">{service.plays} plays · {Math.round(service.listened_ms / 60000)} min</span></div>)}</div> : <p className="py-5 text-center text-xs text-text-3">No service data for this month.</p>}</Card>
+            <Card className="p-4"><h3 className="mb-2 text-sm font-bold text-text">Services this month</h3>{monthRecap?.services.length ? <div className="flex flex-col gap-2">{monthRecap.services.map((service) => <div key={`${service.account_id ?? 'none'}-${service.source}`} className="flex justify-between gap-2 text-xs"><span className="min-w-0"><span className="font-semibold capitalize text-text-2">{service.account_label ?? service.source}</span><span className="ml-2 font-mono text-[10px] text-text-3">{service.source}</span></span><span className="font-mono text-text-3">{service.plays} plays · {Math.round(service.listened_ms / 60000)} min</span></div>)}</div> : <p className="py-5 text-center text-xs text-text-3">No service data for this month.</p>}</Card>
           </div>
         </section>
       )}

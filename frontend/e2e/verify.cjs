@@ -346,8 +346,8 @@ async function installMocks(page, opts = {}) {
       tracks: 2, artists: 1, albums: 1, playlists: 1, listens: 4, accounts: 2, listened_ms: 2400000,
     })
     if (p === '/api/library/accounts' && method === 'GET') return json([
-      { id: 'musify:default', provider: 'musify', label: 'Musify backup', status: 'connected', auth_mode: 'hive-backup', is_default: true },
-      { id: 'spotify:personal', provider: 'spotify', label: 'Personal', status: 'connected', auth_mode: 'official-export', is_default: false },
+      { id: 'musify:default', provider: 'musify', label: 'Musify backup', status: 'connected', auth_mode: 'hive-backup', is_default: true, tracks: 1, playlists: 2, surfaces: 3, listens: 4, updated_at: 1784500000 },
+      { id: 'spotify:personal', provider: 'spotify', label: 'Personal', status: 'connected', auth_mode: 'official-export', is_default: false, tracks: 5, playlists: 6, surfaces: 7, listens: 8, updated_at: 1784500000 },
     ])
     if (p === '/api/library/tracks' && method === 'GET') return json({
       total: 2,
@@ -586,6 +586,17 @@ async function main() {
 
     const browser = await chromium.launch()
 
+    // The app is i18n'd: this suite asserts English UI strings, so every
+    // context must render English no matter the host's locale (a pt-BR
+    // system would otherwise flip the whole app to Portuguese and fail
+    // every text assertion). Patching newContext here - rather than at each
+    // of this file's ~40 call sites - also keeps the throttle wrap below a
+    // single choke point.
+    const origNewContext = browser.newContext.bind(browser)
+    browser.newContext = async (options = {}) => {
+      return origNewContext({ locale: 'en-US', ...options })
+    }
+
     // Diagnostic only, opt-in: THROTTLE_RATE=N node e2e/verify.cjs slows
     // every page's CPU by Nx via CDP, to empirically surface event-loop-
     // timing races that a fast dev machine never hits but a loaded CI
@@ -739,7 +750,8 @@ async function main() {
       await page.waitForSelector('h1:has-text("Sync")')
       const defaultCard = page.locator('h3', { hasText: 'Default' }).locator('xpath=ancestor::div[contains(@class,"rounded-card")][1]')
       await defaultCard.getByRole('button', { name: 'Edit', exact: true }).click()
-      await page.waitForSelector('text=Edit "Default"')
+      // The i18n'd en string uses typographic quotes: Edit “Default”
+      await page.waitForSelector('text=Edit “Default”')
       await page.getByRole('radio', { name: 'Services', exact: true }).click()
       for (const service of ['TIDAL', 'Apple Music', 'YouTube Music', 'Qobuz', 'Deezer', 'Amazon Music']) {
         const chip = page.getByRole('button', { name: service, exact: true })
@@ -883,7 +895,8 @@ async function main() {
 
       const dismissButtons = () => page.getByRole('button', { name: /^Dismiss: / })
       const badge = () => page.locator('h2:has-text("Needs a look")').locator('xpath=following-sibling::span[1]')
-      const HELD_ALERT = 'Dismiss: 4 changes held from the last pass'
+      // i18n en string: '{count} changes held from the last run'
+      const HELD_ALERT = 'Dismiss: 4 changes held from the last run'
 
       // Every errored/unconfigured account plus the held/deferred sync alert.
       const expectedAlertCount = ACCOUNTS.filter((account) => account.state !== 'connected').length + 1
@@ -1387,7 +1400,8 @@ async function main() {
       // Edit the "Default" job — scope to its own card (2 cards exist).
       const defaultCard = page.locator('h3', { hasText: 'Default' }).locator('xpath=ancestor::div[contains(@class,"rounded-card")][1]')
       await defaultCard.getByRole('button', { name: 'Edit', exact: true }).click()
-      await page.waitForSelector('text=Edit "Default"')
+      // The i18n'd en string uses typographic quotes: Edit “Default”
+      await page.waitForSelector('text=Edit “Default”')
 
       // Step 1, Direction: this job's saved mode ("nway") should already be
       // checked on open. The wizard loads the saved mode via a post-render
@@ -1529,7 +1543,8 @@ async function main() {
       console.log(`${noFolderFieldOk ? 'ok        ' : 'FAIL      '} Wizard Limits & downloads: no folder/format fields (those moved to Settings)`)
       if (!noFolderFieldOk) results.push({ label: 'wizard no folder field', overflow: true })
 
-      const removalsInput = page.getByLabel('Max removals / pass')
+      // i18n en label: 'Max removals / run'
+      const removalsInput = page.getByLabel('Max removals / run')
       await removalsInput.fill('40')
 
       // The review is a structured label->value layout (REVIEW box, not the
@@ -1692,7 +1707,8 @@ async function main() {
 
       const defaultCard = page.locator('h3', { hasText: 'Default' }).locator('xpath=ancestor::div[contains(@class,"rounded-card")][1]')
       await defaultCard.getByRole('button', { name: 'Edit', exact: true }).click()
-      await page.waitForSelector('text=Edit "Default"')
+      // The i18n'd en string uses typographic quotes: Edit “Default”
+      await page.waitForSelector('text=Edit “Default”')
 
       const noPickerInNway = (await page.getByText('Source of truth', { exact: true }).count()) === 0
       console.log(`${noPickerInNway ? 'ok        ' : 'FAIL      '} Source of truth picker is hidden while N-way (this job's fixture mode)`)

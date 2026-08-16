@@ -33,6 +33,26 @@ from ...services.sonora import SonoraAdapter
 router = APIRouter()
 
 
+def _enabled_surfaces(settings, account_id: str) -> dict[str, bool]:
+    """Canonical surface toggles for one account (all True by default)."""
+    from ...services.settings import SURFACES
+
+    return {surface: settings.account_surface(account_id, surface) for surface in SURFACES}
+
+
+def _sonora_surfaces(toggles: dict[str, bool]) -> list[str]:
+    """Map canonical surface toggles to Sonora's backup-v2 surface names."""
+    names = []
+    mapping = {"liked_tracks": "likedSongs", "followed_artists": "followedArtists",
+               "saved_albums": "likedAlbums", "playlists": "playlists", "history": "history"}
+    for surface, enabled in toggles.items():
+        if enabled and surface in mapping:
+            names.append(mapping[surface])
+    if toggles.get("playlists", True):
+        names.append("likedPlaylists")
+    return names
+
+
 def _account_slot(provider: str, label: str, requested: str | None, default_label: str) -> str:
     if requested:
         if not requested.startswith(f"{provider}:"):
@@ -88,6 +108,30 @@ def library_accounts(request: Request):
     return request.app.state.music_db.accounts()
 
 
+@router.put("/api/library/accounts/{account_id}")
+def rename_library_account(account_id: str, request: Request, body: dict = Body(...)):
+    """Rename an account slot; its stable id keeps jobs/links/recaps attached."""
+    try:
+        return request.app.state.music_db.rename_account(account_id, str(body.get("label") or ""))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/api/library/accounts/{account_id}")
+def delete_library_account(account_id: str, request: Request, body: dict = Body(default={})):
+    """Remove one account slot. Destructive, so it requires an explicit
+    confirmation flag. Canonical entities still used by other accounts survive;
+    only the removed account's own rows and orphans are deleted."""
+    if not bool(body.get("confirm")):
+        raise HTTPException(status_code=400, detail="removal requires explicit confirmation")
+    try:
+        return request.app.state.music_db.delete_account(account_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/api/library/accounts/{account_id}/backup")
 def export_account_backup(request: Request, account_id: str):
     try:
@@ -126,15 +170,24 @@ def app_logs(request: Request, kind: str = "", tag: str = "", q: str = "",
     return request.app.state.music_db.logs(kind, tag, q, limit)
 
 
+def _account_ids(accounts: str) -> list[str]:
+    """Comma-separated account filter from the query string; empty = all."""
+    return [item.strip() for item in (accounts or "").split(",") if item.strip()]
+
+
 @router.get("/api/recaps")
-def recap(request: Request, year: int | None = None, month: int | None = Query(None, ge=1, le=12)):
-    return request.app.state.music_db.recap(year, month)
+def recap(request: Request, year: int | None = None, month: int | None = Query(None, ge=1, le=12),
+          accounts: str = ""):
+    """Recap for a year/month. `accounts=spotify:default,musify:default` restricts
+    every total to those accounts; omitted means the unified recap. A breakdown
+    of which accounts contributed to each total is always included in `services`."""
+    return request.app.state.music_db.recap(year, month, _account_ids(accounts))
 
 
 @router.get("/api/recaps/history")
-def recap_history(request: Request):
+def recap_history(request: Request, accounts: str = ""):
     years = request.app.state.settings.get("LISTENING_RETENTION_YEARS")
-    return request.app.state.music_db.recap_history(years)
+    return request.app.state.music_db.recap_history(years, account_ids=_account_ids(accounts))
 
 
 @router.post("/1/submit-listens")
@@ -171,6 +224,10 @@ async def import_listens(request: Request, body: dict = Body(...)):
     payloads = body.get("listens") or []
     if not isinstance(payloads, list):
         raise HTTPException(status_code=400, detail="listens must be an array")
+    account_id = f"{source}:default"
+    if not request.app.state.settings.account_surface(account_id, "history"):
+        return {"inserted": 0, "duplicates": 0, "skipped": len(payloads),
+                "reason": "listening history is disabled for this account"}
     return request.app.state.music_db.import_listens(payloads, source)
 
 
@@ -183,8 +240,10 @@ async def spotify_export_import(request: Request, backup: UploadFile,
     if len(raw) > MAX_SPOTIFY_EXPORT_BYTES:
         raise HTTPException(status_code=413, detail="Spotify export is larger than 512 MiB")
     try:
+        slot = _account_slot("spotify", label.strip() or "Spotify export", account_id, "Spotify export")
+        surfaces = _enabled_surfaces(request.app.state.settings, slot)
         result = import_spotify_export(request.app.state.music_db, raw, backup.filename or "export.zip",
-                                       label.strip() or "Spotify export", account_id)
+                                       label.strip() or "Spotify export", slot, surfaces)
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     request.app.state.bus.publish(Event(
@@ -238,7 +297,8 @@ async def musify_backup_restore(request: Request, backup: UploadFile,
         raise HTTPException(status_code=400, detail="select user.hive; settings.hive contains no music library")
     try:
         slot = _account_slot("musify", label, account_id, "Musify backup")
-        result = MusifyAdapter(request.app.state.music_db, slot, label).import_backup(raw)
+        surfaces = _enabled_surfaces(request.app.state.settings, slot)
+        result = MusifyAdapter(request.app.state.music_db, slot, label).import_backup(raw, surfaces)
     except HiveDecodeError as exc:
         request.app.state.bus.publish(Event(time.time(), "warn", "musify", f"Musify backup rejected: {exc}"))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -319,7 +379,8 @@ async def sonora_restore(request: Request, backup: UploadFile, label: str = Form
     slot = _account_slot("sonora", label, account_id, "Sonora")
     adapter = (request.app.state.sonora.adapter if slot == request.app.state.sonora.adapter.account_id
                else SonoraAdapter(request.app.state.music_db, slot, label))
-    return adapter.import_backup(data)
+    surfaces = _sonora_surfaces(_enabled_surfaces(request.app.state.settings, slot))
+    return adapter.import_backup(data, surfaces=surfaces)
 
 
 @router.get("/api/sonora/status")

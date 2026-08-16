@@ -116,6 +116,7 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
     id and shares a stable state key. Unlinked playlists take the same name-match
     path (empty `links` => byte-for-byte unchanged when the source is Spotify)."""
     src_key = source.source
+    src_state_key = source.state_key
     agg = {"name": target.name, "pairs": 0, "added": 0, "removed": 0, "missing": 0,
            "held": 0, "removals_skipped": 0, "skipped": 0, "created": 0, "failed": 0,
            "held_removals": [], "failures": []}
@@ -123,15 +124,15 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
     try:
         tgt_by_name = target.list_playlists()
         by_id = {target.playlist_id(pl): pl for pl in tgt_by_name.values() if target.playlist_id(pl)}
-        link_by_src = {link.members[src_key]: link for link in (links or [])
-                       if link.members.get(src_key) and target.source in link.members}
+        link_by_src = {link.members[src_state_key]: link for link in (links or [])
+                       if link.members.get(src_state_key) and target.state_key in link.members}
         for sp_playlist in selected:
             if should_continue and should_continue() != "run":
                 break  # Stop/Pause requested — leave the rest for a re-run
             name = source.playlist_name(sp_playlist)
             link = link_by_src.get(source.playlist_id(sp_playlist))
             state_key = link.id if link else name.strip().casefold()
-            paired_id = link.members.get(target.source) if link else None
+            paired_id = link.members.get(target.state_key) if link else None
             if paired_id:                       # explicitly paired to a specific target playlist
                 tgt = by_id.get(paired_id)
                 if not tgt:
@@ -154,7 +155,7 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
 
             snapshot = sp_playlist.get("snapshot_id")
             if opts.execute and snapshot:
-                state = archive.get_state(songs, state_key, target.source)
+                state = archive.get_state(songs, state_key, target.state_key)
                 current = target.playlist_count(tgt)
                 if state and state[0] == snapshot and (state[1] is None or current is None or current == state[1]):
                     log_note(f"{name}: unchanged since last sync - skipped", tag=target.tag)
@@ -170,14 +171,14 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
                     target, get_source_tracks(sp_playlist), sp_playlist, tgt, cache, songs,
                     execute=opts.execute, max_removals=opts.max_removals, max_adds=opts.max_adds,
                     drain_removals=opts.apply_large_removals, should_continue=should_continue,
-                    source_key=src_key, source_name=source.name, name=name,
+                    source_key=src_key, source_name=source.name, source_state_key=src_state_key, name=name,
                 )
                 agg["pairs"] += 1
                 for k in ("added", "removed", "missing", "held", "removals_skipped"):
                     agg[k] += res[k]
                 _collect_held(agg["held_removals"], res.get("held_removals", []))
                 if res["clean"] and snapshot:
-                    archive.set_state(songs, state_key, target.source, snapshot, res["target_count"])
+                    archive.set_state(songs, state_key, target.state_key, snapshot, res["target_count"])
             except TargetAuthError:
                 raise
             except Exception as e:
@@ -206,17 +207,21 @@ def run_pass(opts, should_continue=None):
     # Spotify needs a writable client whenever it's a write destination: any N-way
     # execute, or a one-way execute where another provider is the source and
     # Spotify is one of the (writable) targets.
-    spotify_is_target = (opts.sync_mode == "oneway" and source_provider != "spotify"
+    spotify_is_target = (opts.sync_mode == "oneway" and str(source_provider).split(":", 1)[0] != "spotify"
                          and spotify_requested)
     sp = None
-    cookie_only = spotify_write_backend() == "cookie"
-    if (source_provider == "spotify" or spotify_requested) and not cookie_only:
-        try:
-            sp = spotify.client(writable=opts.execute and (opts.sync_mode == "nway" or spotify_is_target))
-        except RuntimeError as exc:
-            if source_provider == "spotify":
-                raise
-            log_note(f"Spotify skipped: {exc}", tag="spotify")
+    # The shared client only exists on the legacy provider-only path. Account-
+    # scoped passes mint one client per Spotify account inside the target
+    # builders, each from its own config/token cache — never os.environ.
+    if ":" not in str(source_provider):
+        cookie_only = spotify_write_backend() == "cookie"
+        if (source_provider == "spotify" or spotify_requested) and not cookie_only:
+            try:
+                sp = spotify.client(writable=opts.execute and (opts.sync_mode == "nway" or spotify_is_target))
+            except RuntimeError as exc:
+                if source_provider == "spotify":
+                    raise
+                log_note(f"Spotify skipped: {exc}", tag="spotify")
 
     # The library whose playlists drive this pass: always Spotify for N-way (the
     # symmetric reconcile's name master), the chosen source-of-truth for one-way.
@@ -290,6 +295,10 @@ def run_pass(opts, should_continue=None):
                 norm["id"] = source.track_id(t)
                 out.append(norm)
             return out
+        if sp is None:
+            # Cookie (sp_dc) backend: the source target reads via the web player
+            # with its own account context — there is no shared spotipy client.
+            return source.playlist_tracks(playlist)
         playlist_id = playlist["id"]
         # Lock guards the memo/cache AND serialises the shared spotipy client.
         with sp_lock:
@@ -395,7 +404,9 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
 
     spotify_cookie.take_singles_used()   # drop any residue from a pass that died mid-read
     dirs = {p.source: p.list_playlists() for p in peers}
-    caches = {p.source: load_cache(p.cache_file) for p in peers}
+    # Keyed by state_key (not provider) so two accounts of the same provider
+    # keep separate resolution caches.
+    caches = {p.state_key: load_cache(p.cache_file) for p in peers}
     total = {"added": 0, "removed": 0, "missing": 0, "held": 0, "deferred": 0,
              "removals_skipped": 0, "failed": 0}
     # Both lists stay out of `total` so the scalar accumulate loop stays scalar.
@@ -446,7 +457,7 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
                 log_warn(f"'{name}' reconcile failed, continuing: {e!r}", tag="sync")
     finally:
         for p in peers:
-            save_cache(p.cache_file, caches[p.source])
+            save_cache(p.cache_file, caches[p.state_key])
     total["held_removals"] = held_detail
     total["failures"] = failures
     # Only N-way reads request ISRC, so this is the only path that can spend the

@@ -82,9 +82,10 @@ export const api = {
   getLibraryAccounts: () => request<LibraryAccount[]>('/api/library/accounts'),
   getLibraryTracks: (q = '', limit = 100, offset = 0) =>
     request<LibraryTracksResponse>(`/api/library/tracks?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
-  getRecap: (year: number, month?: number) =>
-    request<Recap>(`/api/recaps?year=${year}${month ? `&month=${month}` : ''}`),
-  getRecapHistory: () => request<RecapHistory>('/api/recaps/history'),
+  getRecap: (year: number, month?: number, accounts?: string[]) =>
+    request<Recap>(`/api/recaps?year=${year}${month ? `&month=${month}` : ''}${accounts?.length ? `&accounts=${accounts.map(encodeURIComponent).join(',')}` : ''}`),
+  getRecapHistory: (accounts?: string[]) =>
+    request<RecapHistory>(`/api/recaps/history${accounts?.length ? `?accounts=${accounts.map(encodeURIComponent).join(',')}` : ''}`),
   getLogs: (kind = '', tag = '', q = '', limit = 500) =>
     request<import('./types').SyncEvent[]>(`/api/logs?kind=${encodeURIComponent(kind)}&tag=${encodeURIComponent(tag)}&q=${encodeURIComponent(q)}&limit=${limit}`),
   exportMusify: (body: { source_provider: string; playlist_id: string; title?: string }) =>
@@ -101,12 +102,18 @@ export const api = {
     form.append('label', label)
     return request<SpotifyExportImport>('/api/spotify/export-import', { method: 'POST', body: form })
   },
-  restoreAccountBackup: (file: File) => {
+  restoreAccountBackup: (file: File, accountId?: string) => {
     const form = new FormData()
     form.append('backup', file)
+    if (accountId) form.append('account_id', accountId)
     return request<{ account_id: string; provider: string; label: string; tracks: number; playlists: number; listens: number }>(
       '/api/library/account-backup', { method: 'POST', body: form })
   },
+  renameLibraryAccount: (id: string, label: string) =>
+    request<{ id: string; label: string }>(`/api/library/accounts/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ label }) }),
+  /** Destructive — the backend refuses the call unless `confirm` is set. */
+  deleteLibraryAccount: (id: string) =>
+    request<{ account_id: string; deleted: true }>(`/api/library/accounts/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ confirm: true }) }),
   getSonoraStatus: () => request<SonoraStatus>('/api/sonora/status'),
   setSonoraEnabled: (enabled: boolean) => request<SonoraStatus>('/api/sonora/status', { method: 'PUT', body: JSON.stringify({ enabled }) }),
   discoverSonora: () => request<Array<{ device_id: string; name: string; ip: string; port: number }>>('/api/sonora/discover', { method: 'POST' }),
@@ -130,6 +137,9 @@ export const api = {
   disconnectAccount: (id: string) => request<OkResponse>(`/api/accounts/${id}`, { method: 'DELETE' }),
   setAccountEnabled: (id: string, enabled: boolean) =>
     request<OkResponse>(`/api/accounts/${id}/enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  /** Per-account switches: pause the whole profile or individual surfaces. */
+  setAccountPrefs: (id: string, prefs: { enabled?: boolean; surfaces?: Partial<Record<import('./types').SurfaceName, boolean>> }) =>
+    request<{ ok: true; account_id: string; enabled: boolean; surfaces: Record<string, boolean> }>(`/api/accounts/${id}/prefs`, { method: 'PUT', body: JSON.stringify(prefs) }),
   /** YouTube Music-only "no-quota" mode: routes reads/writes through a pasted
    * browser session instead of the (daily-capped) Data API. `headers` is the
    * raw "copy request headers" block from a music.youtube.com XHR. */

@@ -316,11 +316,16 @@ class MusifyAdapter:
         self.account_id = account_id
         self.label = label
 
-    def import_backup(self, raw: bytes) -> dict[str, Any]:
+    def import_backup(self, raw: bytes, surfaces: dict[str, bool] | None = None) -> dict[str, Any]:
+        """Import a user.hive backup. `surfaces` maps canonical surface names to
+        booleans; a surface disabled for the account is skipped without deleting
+        already-imported data."""
         data = decode_hive_box(raw)
         found = USER_KEYS.intersection(str(key) for key in data)
         if not found:
             raise HiveDecodeError("this is not a Musify user.hive backup")
+        surfaces = surfaces or {}
+        want = lambda name: surfaces.get(name, True)  # noqa: E731
 
         self.db.sync_account("musify", self.label, "connected", "hive-backup", account_id=self.account_id)
         liked = _items(data.get("likedSongs"))
@@ -356,13 +361,13 @@ class MusifyAdapter:
             conn.execute("DELETE FROM surface_items WHERE account_id=? AND surface IN "
                          "('liked_songs','recently_played','liked_playlists','followed_artists','owned_playlists')",
                          (self.account_id,))
-            for song in liked:
+            for song in liked if want("liked_tracks") else []:
                 self._import_song_surface(conn, song, "liked_songs")
                 counts["likedSongs"] += 1
-            for song in recent:
+            for song in recent if want("history") else []:
                 self._import_song_surface(conn, song, "recently_played")
                 counts["recentlyPlayedSongs"] += 1
-            for playlist in liked_playlists:
+            for playlist in liked_playlists if want("playlists") else []:
                 is_artist = playlist.get("isArtist") is True or str(playlist.get("source") or "") == "youtube-artist"
                 if is_artist:
                     name = str(playlist.get("title") or playlist.get("artist") or "Unknown artist")
@@ -377,12 +382,12 @@ class MusifyAdapter:
                                   _stable_id("remote_playlist", "musify", provider_id, playlist.get("title")), playlist)
                     counts["likedPlaylists"] += 1
             owned_playlists = data.get("playlists") if isinstance(data.get("playlists"), list) else []
-            for provider_id in owned_playlists:
+            for provider_id in owned_playlists if want("playlists") else []:
                 metadata = {"ytid": str(provider_id), "title": str(provider_id), "source": "user-youtube"}
                 self._surface(conn, "owned_playlists", "playlist",
                               _stable_id("remote_playlist", "musify", provider_id), metadata)
 
-            for playlist, folder_name in playlists:
+            for playlist, folder_name in playlists if want("playlists") else []:
                 provider_id = str(playlist.get("ytid") or _stable_id("musify_playlist", playlist.get("title")))
                 collection_id = _stable_id("playlist", self.account_id, provider_id)
                 imported_collection_ids.add(collection_id)
@@ -422,7 +427,7 @@ class MusifyAdapter:
         raw_stats = data.get("wrappedListeningStats")
         entries = listening_entries_from_stats(raw_stats)
         periods = listening_periods_from_stats(raw_stats)
-        if periods:
+        if periods and want("history"):
             counts["listeningStats"] = self.db.replace_listening_aggregates(
                 "musify", entries, periods=periods, account_id=self.account_id, account_label=self.label
             )["replaced"]

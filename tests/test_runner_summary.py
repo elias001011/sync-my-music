@@ -21,6 +21,7 @@ class _FakeSource:
     """Minimal Spotify-shaped source of truth for run_target."""
 
     source, name = "spotify", "Spotify"
+    state_key = "spotify"
 
     def playlist_name(self, pl):
         return pl.get("name", "")
@@ -106,6 +107,7 @@ def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
 
     class FakeTarget:
         name, tag, source = "Apple Music", "apple", "apple"
+        state_key = "apple"
 
         def __init__(self, cache_file):
             self.cache_file = cache_file
@@ -129,7 +131,7 @@ def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
 
     def fake_mirror_pair(target, sp_tracks, sp_playlist, tgt_playlist, cache, songs_, *,
                          execute, max_removals, max_adds, drain_removals=False, should_continue=None,
-                         source_key="spotify", source_name="Spotify", name=None):
+                         source_key="spotify", source_name="Spotify", source_state_key="spotify", name=None):
         captured["tgt_id"] = tgt_playlist["id"]
         return {"clean": True, "added": 1, "removed": 0, "missing": 0, "held": 0,
                 "deferred": 0, "removals_skipped": 0, "target_count": 1}
@@ -158,6 +160,7 @@ def test_run_target_stops_between_playlists_on_control(tmp_path):
 
     class Source:
         source, name = "spotify", "Spotify"
+        state_key = "spotify"
 
         def playlist_name(self, pl):
             names.append(pl["name"])  # counts playlists whose iteration actually starts
@@ -168,6 +171,7 @@ def test_run_target_stops_between_playlists_on_control(tmp_path):
 
     class Target:
         name, tag, source = "Apple Music", "apple", "apple"
+        state_key = "apple"
         cache_file = str(tmp_path / "c.json")
 
         def list_playlists(self):
@@ -195,6 +199,7 @@ def test_mirror_pair_non_spotify_source_never_writes_links(tmp_path):
 
     class FakeTarget:
         name, tag, source = "YouTube Music", "yt", "ytmusic"
+        state_key = "ytmusic"
         cache_file = str(tmp_path / "c.json")
 
         def playlist_tracks(self, pl):
@@ -259,6 +264,7 @@ class _Peer:
 
     def __init__(self, source):
         self.source, self.name, self.tag = source, source.title(), source
+        self.state_key = source
         self.cache_file = ""
 
     def list_playlists(self):

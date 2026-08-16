@@ -42,8 +42,12 @@ DEFAULT_SPOTIFY_TOKEN_CACHE = "data/spotify_token_cache"
 DEFAULT_SPOTIFY_WRITE_BACKEND = "oauth"
 
 
-def spotify_write_backend():
-    return (os.getenv("SPOTIFY_WRITE_BACKEND") or DEFAULT_SPOTIFY_WRITE_BACKEND).strip().lower()
+def spotify_write_backend(config=None):
+    """Which credential Spotify WRITES use for one account: the account's own
+    config wins, then the process env (legacy). `oauth` = registered dev app;
+    `cookie` = first-party web client via sp_dc."""
+    value = (from_config(config, "SPOTIFY_WRITE_BACKEND") or "").strip().lower()
+    return value or DEFAULT_SPOTIFY_WRITE_BACKEND
 
 
 def required_env(var_name):
@@ -51,6 +55,34 @@ def required_env(var_name):
     if not value:
         raise RuntimeError(f"Missing required environment variable: {var_name}")
     return value
+
+
+def from_config(config, key, default=None):
+    """A setting for one account: the account's own config wins; otherwise the
+    process env (the CLI / legacy path). Account configs are passed DIRECTLY to
+    target instances — nothing is written into os.environ, so concurrent
+    accounts can never leak credentials into each other."""
+    if config is not None:
+        value = config.get(key)
+        return default if value in (None, "") else value
+    return os.getenv(key, default)
+
+
+def required_env_from(config, var_name):
+    value = from_config(config, var_name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {var_name}")
+    return value
+
+
+def account_state_key(account_id: str | None) -> str:
+    """The archive/cache namespace of one account: the bare provider for the
+    `:default` account (byte-for-byte the legacy keys), the account id for
+    named accounts — so two accounts of the same provider never share state."""
+    if not account_id:
+        return ""
+    provider, _, rest = account_id.partition(":")
+    return provider if rest in ("", "default") else account_id
 
 
 def parse_interval(value):
@@ -84,6 +116,27 @@ class Options:
     sync_source: str = DEFAULT_SYNC_SOURCE
     spotify_cache_file: str = DEFAULT_SPOTIFY_CACHE_FILE
     apply_large_removals: bool = False
+    # Multi-account mode: account_id -> provider for the participating accounts
+    # (empty = the legacy provider-only path). The engine builds one target per
+    # account with its OWN config snapshot, so two accounts of the same service
+    # run side by side without sharing credentials or caches.
+    accounts: dict = None
+    # account_id -> {KEY: value} config snapshot (set by the web layer from the
+    # account registry; never written into os.environ).
+    account_configs: dict = None
+
+    def __post_init__(self):
+        if self.accounts is None:
+            self.accounts = {}
+        if self.account_configs is None:
+            self.account_configs = {}
+
+    def account_config(self, account_id: str) -> dict:
+        """Config snapshot for one participating account (empty if unknown)."""
+        return self.account_configs.get(account_id) or {}
+
+    def account_provider(self, account_id: str) -> str:
+        return str(account_id).split(":", 1)[0]
 
 
 def parse_args(argv=None):

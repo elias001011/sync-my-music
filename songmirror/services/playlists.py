@@ -14,7 +14,7 @@ from ..engine import spotify
 from ..engine import archive
 from ..engine.config import parse_args
 from ..engine.config import spotify_write_backend
-from ..engine.targets import build_one
+from ..engine.targets import build_account_target, build_one
 from ..engine.targets.base import TargetAuthError
 from .settings import _open_private
 
@@ -109,16 +109,31 @@ class PlaylistService:
                      "count": target.playlist_count(pl), "image": pl.get("image") or "",
                      "owned": True} for pl in target.browse_playlists()]
         if ":" in provider_id:
-            if self._database is None:
+            if self._database is not None:
+                from .canonical_target import CanonicalAccountTarget
+                account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
+                if account:
+                    target = CanonicalAccountTarget(self._database, provider_id, account["label"])
+                    return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
+                             "count": target.playlist_count(pl), "image": pl.get("image") or "",
+                             "owned": True} for pl in target.browse_playlists()]
+            # A live multi-account profile: browse with its own config snapshot.
+            opts = parse_args([])
+            opts.accounts = {provider_id: str(provider_id).split(":", 1)[0]}
+            opts.account_configs = {provider_id: self._settings.account_config_snapshot(provider_id)}
+            try:
+                target = build_account_target(provider_id, opts)
+            except Exception:
                 return []
-            from .canonical_target import CanonicalAccountTarget
-            account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
-            if not account:
+            if target is None:
                 return []
-            target = CanonicalAccountTarget(self._database, provider_id, account["label"])
+            try:
+                playlists = target.browse_playlists()
+            except Exception:
+                return []
             return [{"id": target.playlist_id(pl), "name": target.playlist_name(pl),
-                     "count": target.playlist_count(pl), "image": pl.get("image") or "",
-                     "owned": True} for pl in target.browse_playlists()]
+                     "count": target.playlist_count(pl), "image": _pl_image(pl),
+                     "owned": True} for pl in playlists]
         if provider_id == "jellyfin":
             from ..engine import jellyfin
             rows = [{**r, "owned": True} for r in jellyfin.list_playlists()]
@@ -196,6 +211,10 @@ class PlaylistService:
         self._settings.apply_to_env()
         opts = parse_args([])
         try:
+            if ":" in provider_id:
+                opts.accounts = {provider_id: str(provider_id).split(":", 1)[0]}
+                opts.account_configs = {provider_id: self._settings.account_config_snapshot(provider_id)}
+                return build_account_target(provider_id, opts), opts
             sp = (spotify.client() if provider_id == "spotify" and spotify_write_backend() != "cookie" else None)
             return build_one(provider_id, opts, sp), opts
         except Exception:

@@ -83,21 +83,26 @@ def rotate_browser_cookie(auth_file):
         return False
 
 
-def build():
+def build(config=None):
     """A ready YT target, or None (logged) when YT isn't set up. Prefers the
     no-quota browser (youtubei) backend when YTMUSIC_PREFER_BROWSER is on and
     YTMUSIC_BROWSER_AUTH points at a ytmusicapi browser-auth file; otherwise the
-    durable OAuth Data API (the default)."""
-    browser = os.getenv("YTMUSIC_BROWSER_AUTH", "")
-    if os.getenv("YTMUSIC_PREFER_BROWSER", "").lower() in ("1", "on", "true", "yes") and browser and os.path.exists(browser):
+    durable OAuth Data API (the default). `config` is the account's own settings
+    snapshot (passed directly, never via os.environ)."""
+    from ..config import from_config
+
+    browser = (from_config(config, "YTMUSIC_BROWSER_AUTH") or "").strip()
+    prefer_browser = (from_config(config, "YTMUSIC_PREFER_BROWSER") or "").lower() in ("1", "on", "true", "yes")
+    if prefer_browser and browser and os.path.exists(browser):
         try:
             if rotate_browser_cookie(browser):
                 log_note("refreshed the YouTube Music session cookie", tag="yt")
-            return YTMusicBrowserTarget(browser)
+            return YTMusicBrowserTarget(browser, config=config)
         except Exception as e:
             log_warn(f"YouTube Music no-quota (browser) mode failed ({e!r}); falling back to the Data API", tag="yt")
-    auth = os.getenv("YTMUSIC_AUTH_FILE", DEFAULT_AUTH_FILE)
-    cid, secret = os.getenv("YTMUSIC_OAUTH_CLIENT_ID"), os.getenv("YTMUSIC_OAUTH_CLIENT_SECRET")
+    auth = (from_config(config, "YTMUSIC_AUTH_FILE") or DEFAULT_AUTH_FILE)
+    cid = from_config(config, "YTMUSIC_OAUTH_CLIENT_ID")
+    secret = from_config(config, "YTMUSIC_OAUTH_CLIENT_SECRET")
     if not os.path.exists(auth):
         log_note(f"YouTube Music skipped: no OAuth token '{auth}' (create with: "
                  "uvx ytmusicapi oauth --file data/ytmusic_oauth.json --client-id ... --client-secret ...)", tag="yt")
@@ -111,7 +116,7 @@ def build():
         log_note("YouTube Music skipped: ytmusicapi not installed", tag="yt")
         return None
     try:
-        return YTMusicTarget(auth, OAuthCredentials(client_id=cid, client_secret=secret))
+        return YTMusicTarget(auth, OAuthCredentials(client_id=cid, client_secret=secret), config=config)
     except Exception as e:
         log_warn(f"YouTube Music unavailable (re-run the ytmusicapi oauth setup?): {e!r}", tag="yt")
         return None
@@ -161,12 +166,14 @@ class YTMusicTarget(MirrorTarget):
     tag = "yt"
     source = "ytmusic"
 
-    def __init__(self, auth_file, creds):
+    def __init__(self, auth_file, creds, config=None):
+        from ..config import from_config
+
         self._auth_file = auth_file
         self._creds = creds
         with open(auth_file) as f:
             self._tok = json.load(f)
-        self.cache_file = os.getenv("YTMUSIC_CACHE_FILE", "ytmusic_resolve_cache.json")
+        self.cache_file = from_config(config, "YTMUSIC_CACHE_FILE", "ytmusic_resolve_cache.json")
         self._session = requests.Session()  # Data API (reads + writes)
         from ytmusicapi import YTMusic
         self._ytm = YTMusic()  # public, unauthenticated search for resolution (no Data API quota)
@@ -361,8 +368,10 @@ class YTMusicBrowserTarget(YTMusicTarget):
     Inherits resolve/search (still the free public ytmusicapi) and the dict-shape
     accessors — only the reads/writes swap to the youtubei path."""
 
-    def __init__(self, browser_auth_file):
-        self.cache_file = os.getenv("YTMUSIC_CACHE_FILE", "ytmusic_resolve_cache.json")
+    def __init__(self, browser_auth_file, config=None):
+        from ..config import from_config
+
+        self.cache_file = from_config(config, "YTMUSIC_CACHE_FILE", "ytmusic_resolve_cache.json")
         from ytmusicapi import YTMusic
         self._ytm = YTMusic()                   # public search (used by inherited resolve/_search)
         self._api = YTMusic(browser_auth_file)  # authenticated reads + writes, no Data API quota

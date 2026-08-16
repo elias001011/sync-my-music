@@ -112,6 +112,7 @@ class _FakePeer:
 
     def __init__(self, source):
         self.source = self.tag = self.name = source
+        self.state_key = source
 
     def playlist_tracks(self, pl):
         return [{"id": f"{self.source}1", "name": "Song", "artists": ["A"], "artist": "A",
@@ -154,6 +155,7 @@ class _P:
     for exercising the persist gate + removal draining across passes."""
 
     def __init__(self, source, isrcs):
+        self.state_key = source
         self.source = self.tag = self.name = source
         self._isrcs = list(isrcs)
         self.removed = []
@@ -260,6 +262,7 @@ class _VariantPeer:
 
     def __init__(self, source, track, resolve_id):
         self.source = self.tag = self.name = source
+        self.state_key = source
         self._track = track
         self._resolve_id = resolve_id
         self.added, self.removed = [], []

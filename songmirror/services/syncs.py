@@ -34,8 +34,9 @@ class SyncJob:
     name: str = "Sync"
     enabled: bool = True                      # participates in scheduled auto-sync
     mode: str = DEFAULT_SYNC_MODE             # oneway | nway
-    source: str = DEFAULT_SYNC_SOURCE         # one-way source of truth
-    providers: str = DEFAULT_PROVIDERS        # comma-separated participating providers
+    source: str = DEFAULT_SYNC_SOURCE         # one-way source of truth (provider or account_id)
+    providers: str = DEFAULT_PROVIDERS        # legacy: comma-separated providers (kept for CLI/compat)
+    accounts: str = ""                        # comma-separated account_ids; empty = derived from providers
     playlists: str = ""                       # comma-separated names (empty = every same-named pair)
     interval: str = DEFAULT_INTERVAL          # this job's own auto-sync cadence
     max_adds: int = DEFAULT_MAX_ADDS
@@ -43,6 +44,15 @@ class SyncJob:
     apply_large_removals: bool = False        # drain removals over max_removals across passes (default: hold back)
     download: bool = False                    # opt into the global download mirror
     id: str = ""
+
+    @property
+    def account_list(self) -> list[str]:
+        """The job's participating account ids. Legacy jobs store providers;
+        each maps to its `{provider}:default` account, so old jobs keep pointing
+        at the migrated default accounts with zero data loss."""
+        if self.accounts.strip():
+            return [item.strip() for item in self.accounts.split(",") if item.strip()]
+        return [f"{item.strip()}:default" for item in self.providers.split(",") if item.strip()]
 
 
 class SyncStore:
@@ -61,7 +71,15 @@ class SyncStore:
                 data = dict(row)
                 if not str(data.get("providers") or "").strip():
                     data["providers"] = LEGACY_NAMED_JOB_PROVIDERS
-                jobs.append(SyncJob(**data))
+                # Old jobs predate per-account selectors: `accounts` is derived
+                # from `providers` (each -> its :default account) on first read,
+                # and the derived value is persisted back so the stored job is
+                # explicit going forward.
+                if not str(data.get("accounts") or "").strip():
+                    data["accounts"] = ",".join(
+                        f"{item.strip()}:default" for item in str(data["providers"]).split(",") if item.strip())
+                job = SyncJob(**data)
+                jobs.append(job)
             return jobs
         except (FileNotFoundError, json.JSONDecodeError):
             return []

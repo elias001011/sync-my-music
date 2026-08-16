@@ -7,7 +7,7 @@ import time
 
 import requests
 
-from ..config import AMP, REQUEST_TIMEOUT, polite_sleep, required_env
+from ..config import AMP, REQUEST_TIMEOUT, polite_sleep, required_env_from
 from ..logs import log, log_warn
 from ..matching import normalize_text, romanized, score_candidate
 from .base import MirrorTarget, TargetAuthError
@@ -24,13 +24,13 @@ def _chunks(seq, size):
         yield seq[i : i + size]
 
 
-def _headers():
-    bearer = required_env("APPLE_BEARER_TOKEN")
+def _headers(config=None):
+    bearer = required_env_from(config, "APPLE_BEARER_TOKEN")
     if bearer.lower().startswith("bearer "):
         bearer = bearer[7:]
     return {
         "Authorization": f"Bearer {bearer}",
-        "Media-User-Token": required_env("APPLE_USER_TOKEN"),
+        "Media-User-Token": required_env_from(config, "APPLE_USER_TOKEN"),
         "Origin": "https://music.apple.com",
         "Referer": "https://music.apple.com/",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
@@ -42,7 +42,8 @@ class AppleMusicTarget(MirrorTarget):
     tag = "apple"
     source = "apple"
 
-    def __init__(self, storefront, cache_file):
+    def __init__(self, storefront, cache_file, config=None):
+        self._config = config
         self.storefront = storefront or "us"  # empty -> a broken /catalog//search URL (400)
         self.cache_file = cache_file
         # One pooled session (keep-alive) for the whole pass — opening a fresh
@@ -50,7 +51,7 @@ class AppleMusicTarget(MirrorTarget):
         # resets under the ~100+ calls a big playlist needs. Headers read env
         # now so re-captured tokens are picked up per pass.
         self._session = requests.Session()
-        self._session.headers.update(_headers())
+        self._session.headers.update(_headers(self._config))
         self._search_throttled = False  # set once catalog search rate-limits; defer the rest of the pass
 
     # -- HTTP ------------------------------------------------------------------

@@ -115,12 +115,21 @@ def account_id_for(label: str) -> str:
 
 
 def import_spotify_export(database, raw: bytes, filename: str, label: str,
-                          account_id: str | None = None) -> dict[str, Any]:
+                          account_id: str | None = None,
+                          surfaces: dict[str, bool] | None = None) -> dict[str, Any]:
+    """Import an official Spotify account-data ZIP/JSON.
+
+    `surfaces` maps the canonical surface names (playlists, liked_tracks,
+    saved_albums, followed_artists, history) to booleans; surfaces disabled for
+    the account are skipped without deleting anything already imported.
+    """
     if len(raw) > MAX_SPOTIFY_EXPORT_BYTES:
         raise ValueError("Spotify export is larger than 512 MiB")
     account_id = account_id or account_id_for(label)
     if not account_id.startswith("spotify:"):
         raise ValueError("Spotify account id must start with spotify:")
+    surfaces = surfaces or {}
+    want = lambda name: surfaces.get(name, True)  # noqa: E731
     playlists: list[dict[str, Any]] = []
     liked: list[dict[str, Any]] = []
     albums: list[dict[str, Any]] = []
@@ -150,8 +159,16 @@ def import_spotify_export(database, raw: bytes, filename: str, label: str,
             if not isinstance(item, dict):
                 continue
             playlist = _playlist(item)
-            if playlist:
+            if playlist and want("playlists"):
                 playlists.append(playlist)
+    if not want("liked_tracks"):
+        liked = []
+    if not want("saved_albums"):
+        albums = []
+    if not want("followed_artists"):
+        artists = []
+    if not want("history"):
+        events = []
     library = database.import_provider_library("spotify", account_id, label, playlists, liked, albums, artists)
     listens = database.import_listens(events, "spotify", account_id=account_id, account_label=label)
     return {"account_id": account_id, "label": label, "files": len(files), **library,

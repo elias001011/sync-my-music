@@ -57,6 +57,9 @@ def create_app(settings=None, bus=None, sync_service=None, links=None, transfers
         load_dotenv()
         os.environ["SONGMIRROR_ENV_FILE"] = settings.env_path
         settings.apply_to_env()
+        # Turn legacy single-account settings into `{provider}:default` registry
+        # entries so every account has a stable, toggleable profile.
+        settings.migrate_accounts()
         music_db.prune_listening_history(settings.get("LISTENING_RETENTION_YEARS"))
         if str(settings.get("SONORA_LAN_SYNC") or "0") == "1":
             sonora.start()

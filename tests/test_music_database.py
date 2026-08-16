@@ -24,7 +24,9 @@ def test_aggregate_import_replaces_same_month_instead_of_adding(tmp_path):
     recap = db.recap(2026, 7)
     assert recap["plays"] == 4
     assert recap["listened_ms"] == 40 * 60_000
-    assert recap["services"] == [{"source": "musify", "plays": 4, "listened_ms": 40 * 60_000}]
+    assert recap["services"] == [{"source": "musify", "account_id": "musify:default",
+                                   "account_label": "Musify", "plays": 4,
+                                   "listened_ms": 40 * 60_000}]
 
 
 def test_listenbrainz_events_are_idempotent(tmp_path):
@@ -90,6 +92,127 @@ def test_playlist_versions_are_bounded_and_restorable(tmp_path):
     assert result == {"collection_id": "p", "restored_items": 1}
     with db.connect() as conn:
         assert conn.execute("SELECT track_id FROM collection_items WHERE collection_id='p'").fetchone()[0] == track_b
+
+
+def _listen(db, account_id, source, year, month, day, track_name="A Song"):
+    """Insert one direct listen row for an existing account/track."""
+    track = db.upsert_track({"track_name": track_name, "artist_name": "An Artist", "duration_ms": 180_000})
+    listened_at = int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+    with db.connect() as conn:
+        conn.execute(
+            """INSERT INTO listens(id, track_id, account_id, listened_at, listened_ms, source,
+               source_event_id, metadata, imported_at) VALUES (?, ?, ?, ?, 180_000, ?, ?, '{}', ?)""",
+            (f"{account_id}-{year}-{month}-{day}-{track_name}", track, account_id, listened_at,
+             source, f"event-{account_id}-{year}-{month}-{day}-{track_name}", listened_at),
+        )
+    return track
+
+
+def test_recap_filtered_by_account(tmp_path):
+    """Selecting one account's recap excludes the other account's totals and
+    events/snapshots are never double counted."""
+    db = MusicDatabase(tmp_path / "music.db")
+    spotify = db.sync_account("spotify", "Spotify Work", "connected")["id"]
+    musify = db.sync_account("musify", "Musify", "connected", account_id="musify:default")["id"]
+    _listen(db, spotify, "spotify", 2026, 7, 3, "Work Track")
+    _listen(db, musify, "musify", 2026, 7, 4, "Musify Track")
+    start, end = _month(2026, 7)
+    db.replace_listening_aggregates("musify", [{
+        "period_start": start, "period_end": end, "play_count": 2, "listened_ms": 20 * 60_000,
+        "track_metadata": {"track_name": "Musify Track", "artist_name": "An Artist"},
+    }], account_id=musify)
+
+    unified = db.recap(2026, 7)
+    assert unified["plays"] == 4  # 1 event + 1 event + 2 snapshot — no double counting
+    only_spotify = db.recap(2026, 7, account_ids=[spotify])
+    assert only_spotify["plays"] == 1
+    only_musify = db.recap(2026, 7, account_ids=[musify])
+    assert only_musify["plays"] == 3  # 1 event + 2 snapshot
+    both = db.recap(2026, 7, account_ids=[spotify, musify])
+    assert both["plays"] == unified["plays"]
+    # The services breakdown names the contributing account, not just the source.
+    assert {(row["account_id"], row["source"], row["plays"]) for row in unified["services"]} == {
+        (spotify, "spotify", 1), (musify, "musify", 3),
+    }
+    labels = {row["account_id"]: row["account_label"] for row in unified["services"]}
+    assert labels[spotify] == "Spotify Work"
+
+
+def test_recap_history_filtered_by_account(tmp_path):
+    db = MusicDatabase(tmp_path / "music.db")
+    spotify = db.sync_account("spotify", "Spotify Work", "connected")["id"]
+    musify = db.sync_account("musify", "Musify", "connected", account_id="musify:default")["id"]
+    _listen(db, spotify, "spotify", 2026, 7, 3, "Work Track")
+    _listen(db, musify, "musify", 2026, 7, 4, "Musify Track")
+
+    history = db.recap_history(3, datetime(2026, 8, 1, tzinfo=timezone.utc))
+    july = next(item for item in history["months"] if (item["year"], item["month"]) == (2026, 7))
+    assert july["plays"] == 2
+    filtered = db.recap_history(3, datetime(2026, 8, 1, tzinfo=timezone.utc), account_ids=[spotify])
+    july_filtered = next(item for item in filtered["months"] if (item["year"], item["month"]) == (2026, 7))
+    assert july_filtered["plays"] == 1
+
+
+def test_rename_and_delete_account_keeps_entities_shared_with_other_accounts(tmp_path):
+    db = MusicDatabase(tmp_path / "music.db")
+    first = db.sync_account("spotify", "Work", "connected")["id"]
+    second = db.sync_account("spotify", "Personal", "connected", account_id="spotify:personal")["id"]
+    # Both accounts reference the same canonical track (shared entity).
+    db.import_provider_library("spotify", first, "Work", liked_tracks=[{
+        "track_name": "Shared Song", "artist_name": "Artist", "provider_track_id": "t1"}])
+    db.import_provider_library("spotify", second, "Personal", liked_tracks=[{
+        "track_name": "Shared Song", "artist_name": "Artist", "provider_track_id": "t2"},
+        {"track_name": "Only Personal", "artist_name": "Artist", "provider_track_id": "t3"}])
+
+    # Rename keeps the stable id.
+    db.rename_account(first, "Work Renamed")
+    assert next(row for row in db.accounts() if row["id"] == first)["label"] == "Work Renamed"
+
+    before = db.library()
+    assert before["total"] == 2
+    db.delete_account(first)
+    after = db.library()
+    # 'Shared Song' survives because the personal account still references it.
+    assert after["total"] == 2
+    assert any(item["title"] == "Shared Song" for item in after["items"])
+    db.delete_account(second)
+    # With both gone, every orphan (shared or not) is garbage collected.
+    assert db.library()["total"] == 0
+    assert db.accounts() == []
+
+
+def test_delete_account_removes_only_its_own_listens_and_collections(tmp_path):
+    db = MusicDatabase(tmp_path / "music.db")
+    spotify = db.sync_account("spotify", "Spotify", "connected")["id"]
+    musify = db.sync_account("musify", "Musify", "connected", account_id="musify:default")["id"]
+    _listen(db, spotify, "spotify", 2026, 7, 3, "Spotify Song")
+    _listen(db, musify, "musify", 2026, 7, 4, "Musify Song")
+    db.import_provider_library("spotify", spotify, "Spotify",
+                               playlists=[{"name": "Road", "provider_id": "pl1",
+                                           "tracks": [{"track_name": "Spotify Song", "artist_name": "An Artist"}]}])
+
+    db.delete_account(spotify)
+    remaining = db.accounts()
+    assert [row["id"] for row in remaining] == [musify]
+    # The Spotify listen and its playlist are gone; Musify's listen survives.
+    assert db.recap(2026, 7)["plays"] == 1
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0] == 0
+
+
+def test_delete_account_requires_explicit_confirmation_at_api_layer():
+    from fastapi import HTTPException
+    import pytest
+
+    from songmirror.web.routers import library
+
+    class _App:
+        state = type("State", (), {"music_db": None})()
+
+    request = type("Request", (), {"app": _App})()
+    with pytest.raises(HTTPException) as exc:
+        library.delete_library_account("spotify:default", request, {})
+    assert exc.value.status_code == 400
 
 
 def test_sonora_backup_v2_import_export(tmp_path):

@@ -57,43 +57,63 @@ _OP_DOC = {
     "searchDesktop": "search",
 }
 
-_provider = None   # cached spotify_scraper CookieTokenProvider (lazy)
+_provider = None      # cached spotify_scraper CookieTokenProvider (lazy)
 _provider_key = None
-_uid = None        # cached cookie-account user id (for rootlist filing)
-_isrc_cache = {}   # track_id -> isrc|None, backfilled from /tracks (see _track_isrcs)
+_uid_by_cookie = {}   # cookie hash -> cached account user id (rootlist filing)
+_isrc_cache = {}      # track_id -> isrc|None, backfilled from /tracks (see _track_isrcs)
 
 
-def configured():
-    """True when an sp_dc cookie is available (env or the stored file)."""
-    return bool(_sp_dc(soft=True))
+def _slug(account_id):
+    """Filesystem-safe per-account suffix: None/`spotify:default` maps to the
+    legacy shared file; a named account gets a stable hash suffix so two
+    accounts never share a cookie file."""
+    if not account_id:
+        return None
+    provider, _, rest = str(account_id).partition(":")
+    if rest in ("", "default"):
+        return None
+    return f"{provider}-{hashlib.sha256(account_id.encode()).hexdigest()[:8]}"
 
 
-def sp_dc_path():
-    """Where the sp_dc cookie is stored. Under SONGMIRROR_DATA_DIR so it lands on
-    the same persistent volume as the other secrets (Docker points it at /data)."""
-    return os.getenv("SPOTIFY_SP_DC_FILE") or os.path.join(
-        os.getenv("SONGMIRROR_DATA_DIR") or "data", "spotify_sp_dc.private")
+def configured(account_id=None):
+    """True when an sp_dc cookie is available (env or the stored file) for the
+    account (default: the shared default account file)."""
+    return bool(_sp_dc(soft=True, account_id=account_id))
 
 
-def _sp_dc(soft=False):
+def sp_dc_path(account_id=None):
+    """Where the account's sp_dc cookie is stored. Under SONGMIRROR_DATA_DIR so
+    it lands on the same persistent volume as the other secrets (Docker points
+    it at /data). Named accounts get their own 0600 file — two accounts can
+    never share (or overwrite) a cookie."""
+    explicit = os.getenv("SPOTIFY_SP_DC_FILE")
+    if explicit and not account_id:
+        return explicit
+    slug = _slug(account_id)
+    name = "spotify_sp_dc.private" if slug is None else f"spotify_sp_dc.{slug}.private"
+    return os.path.join(os.getenv("SONGMIRROR_DATA_DIR") or "data", name)
+
+
+def _sp_dc(soft=False, account_id=None):
     v = os.getenv("SPOTIFY_SP_DC")
-    if v:
+    if v and not account_id:
         return v.strip()
-    path = sp_dc_path()
+    path = sp_dc_path(account_id)
     try:
         with open(path, encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         if soft:
             return None
+        label = account_id or "default"
         raise TargetAuthError(
-            "Spotify cookie mode is on but no sp_dc cookie is set — paste it on the "
-            "Accounts page (or set SPOTIFY_SP_DC).")
+            f"Spotify cookie mode is on but account '{label}' has no sp_dc cookie — "
+            "paste it on the Accounts page (or set SPOTIFY_SP_DC).")
 
 
-def _prov():
-    global _provider, _provider_key, _uid
-    cookie = _sp_dc()
+def _prov(account_id=None):
+    global _provider, _provider_key
+    cookie = _sp_dc(account_id=account_id)
     key = hashlib.sha256(cookie.encode()).hexdigest()
     if _provider is None or _provider_key != key:
         # Imported lazily: spotify_scraper is only pulled in when cookie mode runs.
@@ -101,21 +121,21 @@ def _prov():
         from spotify_scraper.http.transport import HttpxTransport
         _provider = CookieTokenProvider(HttpxTransport(), cookie)
         _provider_key = key
-        _uid = None
+        _uid_by_cookie.clear()
     return _provider
 
 
-def _token():
+def _token(account_id=None):
     try:
-        return _prov().token()
+        return _prov(account_id).token()
     except Exception as e:  # AuthenticationError (bad/rotated cookie) or transport
         raise TargetAuthError(
             f"Spotify cookie rejected ({e}). Re-paste the sp_dc cookie on the Accounts page.") from e
 
 
-def _headers():
+def _headers(account_id=None):
     return {
-        "authorization": f"Bearer {_token()}",
+        "authorization": f"Bearer {_token(account_id)}",
         "app-platform": "WebPlayer",
         "spotify-app-version": _APP_VERSION,
         "Origin": "https://open.spotify.com",
@@ -134,8 +154,9 @@ def _persisted_missing(body):
     return False
 
 
-def _pf(op, variables):
-    """Run a pathfinder operation, self-healing a stale hash and a stale token.
+def _pf(op, variables, account_id=None):
+    """Run a pathfinder operation for one account, self-healing a stale hash and
+    a stale token.
 
     One retry each: a 401 means the bearer expired (drop it and re-mint); a
     PersistedQueryNotFound means the web player rotated its hashes (re-scrape and
@@ -146,9 +167,9 @@ def _pf(op, variables):
     for _ in range(3):
         body = {"variables": variables, "operationName": op,
                 "extensions": {"persistedQuery": {"version": 1, "sha256Hash": _HASHES[doc]}}}
-        r = requests.post(_PATHFINDER, headers=_headers(), data=json.dumps(body), timeout=REQUEST_TIMEOUT)
+        r = requests.post(_PATHFINDER, headers=_headers(account_id), data=json.dumps(body), timeout=REQUEST_TIMEOUT)
         if r.status_code == 401:
-            _prov().invalidate()
+            _prov(account_id).invalidate()
             continue
         try:
             payload = r.json() if r.content else {}
@@ -156,7 +177,7 @@ def _pf(op, variables):
             payload = {}
         if _persisted_missing(payload) and not refreshed:
             refreshed = True
-            _refresh_hashes()
+            _refresh_hashes(account_id)
             continue
         if r.status_code == 403:
             raise TargetAuthError(
@@ -169,12 +190,12 @@ def _pf(op, variables):
     raise TargetAuthError(f"Spotify pathfinder {op} failed after token/hash refresh.")
 
 
-def _refresh_hashes():
+def _refresh_hashes(account_id=None):
     """Re-scrape the current persisted-query hashes from the live web-player
     bundle. Best-effort: on any failure the seeded hashes stay and the caller's
     retry surfaces the original error."""
     try:
-        cookie = {"Cookie": f"sp_dc={_sp_dc()}"}
+        cookie = {"Cookie": f"sp_dc={_sp_dc(account_id=account_id)}"}
         ua = {"User-Agent": _UA}
         shell = requests.get(_WEB, headers={**ua, **cookie}, timeout=REQUEST_TIMEOUT).text
         urls = set(re.findall(r"https://open\.spotifycdn\.com/cdn/build/web-player/[^\"']+\.js", shell))
@@ -199,7 +220,7 @@ def _turi(track_id):
     return track_id if str(track_id).startswith("spotify:") else f"spotify:track:{track_id}"
 
 
-def add(playlist, track_ids):
+def add(playlist, track_ids, account_id=None):
     """Append tracks one at a time (bottom, in order). One track per call so each
     gets a distinct date-added — a single batched add stamps them all identically,
     which scrambles the destination's "Recently added" view. Mirrors the OAuth /
@@ -207,15 +228,17 @@ def add(playlist, track_ids):
     puri = _puri(playlist)
     for tid in track_ids:
         _pf("addToPlaylist", {"playlistUri": puri, "playlistItemUris": [_turi(tid)],
-                              "newPosition": {"moveType": "BOTTOM_OF_PLAYLIST", "fromUid": None}})
+                              "newPosition": {"moveType": "BOTTOM_OF_PLAYLIST", "fromUid": None}},
+            account_id=account_id)
         polite_sleep(0.3)
 
 
-def _content_items(playlist):
+def _content_items(playlist, account_id=None):
     """Yield every raw playlist item (paginated) from the web-player read."""
     puri, offset = _puri(playlist), 0
     while True:
-        data = _pf("fetchPlaylistContents", {"uri": puri, "offset": offset, "limit": 100})
+        data = _pf("fetchPlaylistContents", {"uri": puri, "offset": offset, "limit": 100},
+                   account_id=account_id)
         page = (data.get("playlistV2") or {}).get("content") or {}
         items = page.get("items") or []
         yield from items
@@ -224,11 +247,11 @@ def _content_items(playlist):
             return
 
 
-def contents(playlist):
+def contents(playlist, account_id=None):
     """[{uid, uri}] for every item — `uid` is the per-item handle remove needs
     (the mutation deletes by item uid, not track uri)."""
     return [{"uid": it.get("uid"), "uri": ((it.get("itemV2") or {}).get("data") or {}).get("uri")}
-            for it in _content_items(playlist)]
+            for it in _content_items(playlist, account_id)]
 
 
 def _first_text(node, keys):
@@ -264,8 +287,8 @@ def _rootlist_entries(payload):
             yield from _rootlist_entries(value)
 
 
-def _playlist_details(uri):
-    data = _pf("fetchPlaylistContents", {"uri": uri, "offset": 0, "limit": 1})
+def _playlist_details(uri, account_id=None):
+    data = _pf("fetchPlaylistContents", {"uri": uri, "offset": 0, "limit": 1}, account_id=account_id)
     playlist = data.get("playlistV2") or {}
     name = _first_text(playlist.get("name"), ("text", "name")) or _first_text(playlist, ("name",))
     owner_node = playlist.get("ownerV2") or playlist.get("owner") or {}
@@ -274,10 +297,10 @@ def _playlist_details(uri):
     return name, owner, int((playlist.get("content") or {}).get("totalCount") or 0)
 
 
-def all_playlists():
+def all_playlists(account_id=None):
     """Every owned or saved playlist in the web player's recursive rootlist."""
-    url = f"{_SPCLIENT}/playlist/v2/user/{current_user_id()}/rootlist"
-    r = requests.get(url, headers=_spc_headers(), timeout=REQUEST_TIMEOUT)
+    url = f"{_SPCLIENT}/playlist/v2/user/{current_user_id(account_id)}/rootlist"
+    r = requests.get(url, headers=_spc_headers(account_id), timeout=REQUEST_TIMEOUT)
     if r.status_code in (401, 403):
         raise TargetAuthError("Spotify cookie expired or was revoked. Paste a new sp_dc cookie on Accounts.")
     r.raise_for_status()
@@ -291,32 +314,32 @@ def all_playlists():
         owner = _first_text(entry.get("owner") or {}, ("username", "id"))
         total = 0
         if not name or not owner:
-            detail_name, detail_owner, total = _playlist_details(uri)
+            detail_name, detail_owner, total = _playlist_details(uri, account_id)
             name, owner = name or detail_name, owner or detail_owner
         name = name or f"Playlist {uri.rsplit(':', 1)[-1][:8]}"
         out.append({
             "id": uri.rsplit(":", 1)[-1], "uri": uri, "name": name,
             "owner": {"id": owner}, "tracks": {"total": total},
-            "_owned": not owner or owner == current_user_id(),
+            "_owned": not owner or owner == current_user_id(account_id),
         })
     return out
 
 
-def playlists_by_name():
+def playlists_by_name(account_id=None):
     result = {}
-    for playlist in all_playlists():
+    for playlist in all_playlists(account_id):
         key = playlist["name"].strip().casefold()
         if key not in result or playlist.get("_owned"):
             result[key] = playlist
     return result
 
 
-def search_tracks(query, limit=8):
+def search_tracks(query, limit=8, account_id=None):
     """Search the catalog through the Web Player pathfinder document."""
     data = _pf("searchDesktop", {
         "searchTerm": str(query), "offset": 0, "limit": max(1, min(int(limit), 50)),
         "numberOfTopResults": 5, "includeAudiobooks": False,
-    })
+    }, account_id=account_id)
     tracks = ((data.get("searchV2") or {}).get("tracks") or {}).get("items") or []
     out = []
     for wrapper in tracks:
@@ -434,7 +457,7 @@ def _isrc_singles(ids):
         polite_sleep(0.2)
 
 
-def playlist_tracks(playlist, require_isrc=False, known_isrc=None):
+def playlist_tracks(playlist, require_isrc=False, known_isrc=None, account_id=None):
     """Full track dicts (the shape spotify.playlist_tracks yields) via pathfinder —
     works for private owned playlists the dev-mode official API 403s, and returns []
     for a just-created empty playlist. The pathfinder payload carries no ISRC (confirmed
@@ -448,7 +471,7 @@ def playlist_tracks(playlist, require_isrc=False, known_isrc=None):
     penalty box) and "fetch each track once, ever". Transfers pass neither flag — a
     same-provider copy uses the track id directly."""
     out = []
-    for it in _content_items(playlist):
+    for it in _content_items(playlist, account_id):
         t = (it.get("itemV2") or {}).get("data") or {}
         uri = t.get("uri") or ""
         if not uri.startswith("spotify:track:"):
@@ -472,62 +495,66 @@ def playlist_tracks(playlist, require_isrc=False, known_isrc=None):
     return out
 
 
-def remove(playlist, track_ids):
+def remove(playlist, track_ids, account_id=None):
     """Remove every occurrence of the given tracks. Resolves track uris to item
     uids via a contents read, since the mutation deletes by uid."""
     want = {_turi(t) for t in track_ids}
-    uids = [c["uid"] for c in contents(playlist) if c["uri"] in want and c["uid"]]
+    uids = [c["uid"] for c in contents(playlist, account_id) if c["uri"] in want and c["uid"]]
     if uids:
-        _pf("removeFromPlaylist", {"playlistUri": _puri(playlist), "uids": uids})
+        _pf("removeFromPlaylist", {"playlistUri": _puri(playlist), "uids": uids}, account_id=account_id)
 
 
-def remove_positions(playlist, positions):
+def remove_positions(playlist, positions, account_id=None):
     """Remove the items at these 0-based positions. ponytail: evaluated against a
     fresh contents read, not the caller's read-time snapshot — acceptable because
     reconcile position-removes within one short pass; revisit if drift bites."""
-    items = contents(playlist)
+    items = contents(playlist, account_id)
     uids = [items[p]["uid"] for p in positions if 0 <= p < len(items) and items[p]["uid"]]
     if uids:
-        _pf("removeFromPlaylist", {"playlistUri": _puri(playlist), "uids": uids})
+        _pf("removeFromPlaylist", {"playlistUri": _puri(playlist), "uids": uids}, account_id=account_id)
 
 
-def _spc_headers():
-    return {"authorization": f"Bearer {_token()}", "User-Agent": _UA,
+def _spc_headers(account_id=None):
+    return {"authorization": f"Bearer {_token(account_id)}", "User-Agent": _UA,
             "Content-Type": "application/json;charset=UTF-8", "Accept": "application/json"}
 
 
-def current_user_id():
+def current_user_id(account_id=None):
     """The cookie account's user id, read once via pathfinder (not api.spotify.com)
-    and cached for the process."""
-    global _uid
-    if _uid is None:
-        prof = ((_pf("profileAttributes", {}).get("me") or {}).get("profile") or {})
-        _uid = prof.get("username") or ""
-        if not _uid:
+    and cached per cookie for the process."""
+    cookie = _sp_dc(account_id=account_id)
+    key = hashlib.sha256(cookie.encode()).hexdigest()
+    uid = _uid_by_cookie.get(key)
+    if uid is None:
+        prof = ((_pf("profileAttributes", {}, account_id).get("me") or {}).get("profile") or {})
+        uid = prof.get("username") or ""
+        if not uid:
             raise TargetAuthError("Couldn't read the Spotify account id from the cookie session.")
-    return _uid
+        _uid_by_cookie[key] = uid
+    return uid
 
 
-def validate_session():
+def validate_session(account_id=None):
     """Validate the stored cookie and return its account id."""
-    return current_user_id()
+    return current_user_id(account_id)
 
 
-def _rootlist_add(playlist_uri):
+def _rootlist_add(playlist_uri, account_id=None):
     """File a just-created playlist into the account's rootlist so it shows in the
     library (spclient create leaves it unfiled). Best-effort: the playlist already
     has its tracks, so a rootlist hiccup shouldn't fail the transfer — just log it."""
     try:
-        rl = f"{_SPCLIENT}/playlist/v2/user/{current_user_id()}/rootlist"
-        rev = requests.get(rl, headers=_spc_headers(), timeout=REQUEST_TIMEOUT).json()["revision"]
+        rl = f"{_SPCLIENT}/playlist/v2/user/{current_user_id(account_id)}/rootlist"
+        rev = requests.get(rl, headers=_spc_headers(account_id), timeout=REQUEST_TIMEOUT).json()["revision"]
         body = {"baseRevision": rev, "wantResultingRevisions": False, "wantSyncResult": False, "nonces": [],
                 "deltas": [{"ops": [{"kind": 2, "add": {"items": [{"uri": playlist_uri}], "addFirst": True}}]}]}
-        requests.post(rl + "/changes", headers=_spc_headers(), data=json.dumps(body), timeout=REQUEST_TIMEOUT).raise_for_status()
+        requests.post(rl + "/changes", headers=_spc_headers(account_id), data=json.dumps(body),
+                      timeout=REQUEST_TIMEOUT).raise_for_status()
     except Exception as e:
         log_warn(f"created {playlist_uri} but couldn't add it to the library ({e!r})", tag="spotify")
 
 
-def create(name, public=False, description=""):
+def create(name, public=False, description="", account_id=None):
     """Create a playlist via the web-player backend and file it into the account's
     library — neither call touches api.spotify.com or the dev-app dev-mode gate.
     Returns a playlist object shaped like the spotipy path ({id, uri, name}). Only
@@ -535,14 +562,14 @@ def create(name, public=False, description=""):
     transfer uses name + id."""
     body = {"ops": [{"kind": 6, "updateListAttributes": {"newAttributes": {
         "values": {"name": name or "", "formatAttributes": [], "pictureSize": []}, "noValue": []}}}]}
-    r = requests.post(f"{_SPCLIENT}/playlist/v2/playlist", headers=_spc_headers(),
+    r = requests.post(f"{_SPCLIENT}/playlist/v2/playlist", headers=_spc_headers(account_id),
                       data=json.dumps(body), timeout=REQUEST_TIMEOUT)
     if not r.ok:
         raise TargetAuthError(
             f"Couldn't create the playlist via the cookie backend ({r.status_code}). Create '{name}' in "
             "Spotify and re-run the transfer choosing it as an existing playlist (adding tracks works).")
     uri = (r.json() or {}).get("uri", "")
-    _rootlist_add(uri)
+    _rootlist_add(uri, account_id)
     return {"id": uri.rsplit(":", 1)[-1], "uri": uri, "name": name}
 
 

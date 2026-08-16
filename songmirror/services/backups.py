@@ -23,6 +23,15 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 RECOVERY_BACKUP_LIMIT = 3
 EXCLUDED_SECRET_KEYS = {"SPOTIFY_SP_DC"}
 EXCLUDED_DATA_FILES = {"spotify_sp_dc.private"}
+
+
+def _excluded_data_file(name: str) -> bool:
+    """The default 0600 sp_dc file AND every per-account variant
+    (spotify_sp_dc.<slug>.private) are high-risk web session cookies: they are
+    only ever carried by encrypted backups, never by plain ones."""
+    return name in EXCLUDED_DATA_FILES or (
+        name.startswith("spotify_sp_dc.") and name.endswith(".private")
+    )
 SANITIZED_SETTING_VALUES = {"SPOTIFY_WRITE_BACKEND": "oauth"}
 
 # These gitignored files can live beside the checkout on older/local installs.
@@ -81,7 +90,7 @@ class BackupService:
             relative = path.relative_to(self.data_dir)
             if relative.parts and relative.parts[0] == "recovery":
                 continue
-            if relative.as_posix() in EXCLUDED_DATA_FILES:
+            if _excluded_data_file(relative.as_posix()):
                 continue
             if path.resolve() in {database, Path(f"{database}-wal"), Path(f"{database}-shm")}:
                 continue
@@ -240,7 +249,7 @@ class BackupService:
             if path.parts[0] == "data" and (
                 len(path.parts) < 2
                 or path.parts[1] == "recovery"
-                or "/".join(path.parts[1:]) in EXCLUDED_DATA_FILES
+                or _excluded_data_file("/".join(path.parts[1:]))
             ):
                 raise BackupError("backup contains an unsupported private session file")
             if path.parts[0] == "root" and (len(path.parts) != 2 or path.name not in ROOT_STATE_FILES):

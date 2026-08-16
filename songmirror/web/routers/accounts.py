@@ -4,13 +4,14 @@ import html
 import re
 from dataclasses import asdict
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ...engine.targets import is_peer
 from ...services.accounts import CONNECTORS
 from ...services.accounts.base import ConnStatus, DeviceCode
-from ...services.music_database import PROVIDER_CAPABILITIES
+from ...services.music_database import PROVIDER_CAPABILITIES, SURFACE_CAPABILITIES
+from ...services.settings import DEFAULT_SURFACES, SURFACES
 
 router = APIRouter()
 
@@ -36,10 +37,12 @@ def list_accounts(request: Request):
     for cid, cls in CONNECTORS.items():
         c = cls(store)
         st = c.status()
+        account_id = f"{cid}:default"
+        profile = store.account(account_id) or {}
         fields = []
         for f in c.config_fields:
             d = asdict(f)
-            cur = store.get(f.key) or ""
+            cur = store.account_config(account_id, f.key) or ""
             # Pre-fill on reconnect, but NEVER echo a secret back to the browser —
             # send its value only when it's non-secret; a `configured` flag lets the
             # wizard show "saved — leave blank to keep" for a stored secret instead.
@@ -47,17 +50,21 @@ def list_accounts(request: Request):
             d["configured"] = bool(cur)
             fields.append(d)
         out.append({
-            "id": cid, "provider": cid, "name": c.name, "auth_kind": c.auth_kind,
+            "id": cid, "provider": cid, "account_id": account_id, "name": c.name, "auth_kind": c.auth_kind,
             "fields": fields,
             "state": st.state, "detail": st.detail,
             # Browse-only services (Jellyfin) can't be a sync/transfer peer — the
             # UI filters its source/destination pickers on this.
             "transferable": is_peer(cid),
             "capabilities": PROVIDER_CAPABILITIES.get(cid, {}),
-            "enabled": cid not in disabled,
+            "surface_capabilities": SURFACE_CAPABILITIES.get(cid, {}),
+            "enabled": cid not in disabled and profile.get("enabled", True),
+            "surfaces": profile.get("surfaces") or DEFAULT_SURFACES,
         })
         if hasattr(request.app.state, "music_db"):
-            request.app.state.music_db.sync_account(cid, c.name, st.state, c.auth_kind)
+            request.app.state.music_db.sync_account(cid, c.name, st.state, c.auth_kind,
+                                                    account_id=account_id,
+                                                    enabled=out[-1]["enabled"])
     # Musify has no remote login. It becomes a read-only transfer source after
     # the user uploads user.hive, so expose it alongside connected services only
     # when that local snapshot actually exists.
@@ -104,6 +111,33 @@ def set_account_enabled(cid: str, request: Request, body: dict = Body(...)):
         disabled.add(cid)
     request.app.state.settings.save({"DISABLED_PROVIDERS": ",".join(sorted(disabled))})
     return {"ok": True}
+
+
+@router.put("/api/accounts/{cid}/prefs")
+def set_account_prefs(cid: str, request: Request, body: dict = Body(...)):
+    """Per-account switches: pause the whole profile, or disable individual
+    surfaces (playlists / liked tracks / albums / artists / history). Disabling
+    a surface never deletes already-imported data — it only stops new imports
+    and sync reads for it."""
+    if cid not in CONNECTORS:
+        raise HTTPException(status_code=404, detail="unknown provider")
+    store = request.app.state.settings
+    account_id = f"{cid}:default"
+    surfaces = {
+        surface: bool(body.get("surfaces", {}).get(surface))
+        for surface in SURFACES if surface in (body.get("surfaces") or {})
+    }
+    enabled = body.get("enabled")
+    store.save_account(account_id, enabled=(bool(enabled) if enabled is not None else None),
+                       surfaces=surfaces or None)
+    profile = store.account(account_id)
+    if hasattr(request.app.state, "music_db"):
+        try:
+            request.app.state.music_db.set_account_enabled(account_id, profile["enabled"])
+        except KeyError:
+            pass  # no canonical rows yet — the flag lives in the registry
+    return {"ok": True, "account_id": account_id, "enabled": profile["enabled"],
+            "surfaces": profile["surfaces"]}
 
 
 @router.post("/api/accounts/{cid}/config")

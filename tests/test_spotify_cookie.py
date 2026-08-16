@@ -38,9 +38,10 @@ def test_writes_route_to_cookie_when_enabled(monkeypatch):
 
     assert pl == {"id": "new"}
     assert [c[0] for c in calls] == ["create", "add", "remove", "remove_positions"]
-    # add is batched (one call, both ids); positions are forwarded verbatim
-    assert calls[1] == ("add", ("pl1", ["t1", "t2"]), {})
-    assert calls[3] == ("remove_positions", ("pl1", [0, 2]), {})
+    # add is batched (one call, both ids); positions are forwarded verbatim.
+    # The default account travels explicitly so multi-account wiring is visible.
+    assert calls[1] == ("add", ("pl1", ["t1", "t2"]), {"account_id": "spotify:default"})
+    assert calls[3] == ("remove_positions", ("pl1", [0, 2]), {"account_id": "spotify:default"})
 
 
 def test_sync_read_requires_isrc(monkeypatch):
@@ -49,7 +50,7 @@ def test_sync_read_requires_isrc(monkeypatch):
     monkeypatch.setenv("SPOTIFY_WRITE_BACKEND", "cookie")
     seen = {}
     monkeypatch.setattr(st.spotify_cookie, "playlist_tracks",
-                        lambda pid, require_isrc=False, known_isrc=None: (seen.__setitem__(pid, require_isrc), [])[1])
+                        lambda pid, require_isrc=False, known_isrc=None, account_id=None: (seen.__setitem__(pid, require_isrc), [])[1])
     SpotifyTarget(_BoomSp(), "c.json", sync_peer=True).playlist_tracks({"id": "sync"})
     SpotifyTarget(_BoomSp(), "c.json").playlist_tracks({"id": "xfer"})
     assert seen == {"sync": True, "xfer": False}
@@ -62,7 +63,7 @@ def test_sync_peer_passes_db_isrc_callback(monkeypatch):
     monkeypatch.setattr(st.archive, "get_isrcs", lambda conn, source, ids: {"t1": "US0000000001"})
     captured = {}
 
-    def fake_pt(pid, require_isrc=False, known_isrc=None):
+    def fake_pt(pid, require_isrc=False, known_isrc=None, account_id=None):
         captured["require_isrc"] = require_isrc
         captured["known"] = known_isrc(["t1", "t2"]) if known_isrc else None
         return []
@@ -78,7 +79,7 @@ def test_sync_read_fails_closed_without_isrc(monkeypatch):
     # aborts instead of matching on name/artist alone and churning. The incident guard.
     monkeypatch.setenv("SPOTIFY_WRITE_BACKEND", "cookie")
 
-    def read(pid, require_isrc=False, known_isrc=None):
+    def read(pid, require_isrc=False, known_isrc=None, account_id=None):
         if require_isrc:
             raise TargetAuthError("ISRC lookup failed")
         return []
@@ -93,7 +94,7 @@ def test_reads_route_to_cookie_when_enabled(monkeypatch):
     # Track reads 403 under dev-mode, so cookie mode reads via pathfinder too.
     monkeypatch.setenv("SPOTIFY_WRITE_BACKEND", "cookie")
     monkeypatch.setattr(st.spotify_cookie, "playlist_tracks",
-                        lambda pid, require_isrc=False, known_isrc=None: [{"id": "x", "_via": pid}])
+                        lambda pid, require_isrc=False, known_isrc=None, account_id=None: [{"id": "x", "_via": pid}])
     t = SpotifyTarget(_BoomSp(), "cache.json")  # spotipy read must not be used
     assert t.playlist_tracks({"id": "pl9"}) == [{"id": "x", "_via": "pl9"}]
 
@@ -102,8 +103,8 @@ def test_cookie_mode_lists_nested_rootlist_and_searches_without_spotipy(monkeypa
     from songmirror.engine import spotify_cookie as sc
 
     monkeypatch.setenv("SPOTIFY_WRITE_BACKEND", "cookie")
-    monkeypatch.setattr(sc, "current_user_id", lambda: "me")
-    monkeypatch.setattr(sc, "_spc_headers", lambda: {})
+    monkeypatch.setattr(sc, "current_user_id", lambda *a, **k: "me")
+    monkeypatch.setattr(sc, "_spc_headers", lambda *a, **k: {})
 
     class RootResponse:
         status_code = 200
@@ -117,12 +118,12 @@ def test_cookie_mode_lists_nested_rootlist_and_searches_without_spotipy(monkeypa
             ]}}
 
     monkeypatch.setattr(sc.requests, "get", lambda *args, **kwargs: RootResponse())
-    monkeypatch.setattr(sc, "_playlist_details", lambda uri: ("Saved", "someone", 12))
+    monkeypatch.setattr(sc, "_playlist_details", lambda uri, account_id=None: ("Saved", "someone", 12))
     playlists = sc.all_playlists()
     assert [(item["id"], item["name"], item["_owned"]) for item in playlists] == [
         ("p1", "Road", True), ("p2", "Saved", False)]
 
-    monkeypatch.setattr(sc, "_pf", lambda op, variables: {"searchV2": {"tracks": {"items": [{"item": {"data": {
+    monkeypatch.setattr(sc, "_pf", lambda op, variables, account_id=None: {"searchV2": {"tracks": {"items": [{"item": {"data": {
         "uri": "spotify:track:t1", "name": "Song", "artists": {"items": [{"profile": {"name": "Artist"}}]},
         "trackDuration": {"totalMilliseconds": 123000}, "albumOfTrack": {"name": "Album"},
     }}}]}}})
@@ -254,7 +255,7 @@ def test_playlist_tracks_skips_fetch_for_db_cached_isrc(monkeypatch):
                 "artists": {"items": []}, "trackDuration": {"totalMilliseconds": 1}}},
                 "addedAt": {"isoString": ""}}
 
-    monkeypatch.setattr(sc, "_content_items", lambda pl: [item("t1"), item("t2")])
+    monkeypatch.setattr(sc, "_content_items", lambda pl, account_id=None: [item("t1"), item("t2")])
     fetched = []
     monkeypatch.setattr(sc, "_track_isrcs", lambda ids: (fetched.extend(ids), {i: "NEW" for i in ids})[1])
 

@@ -15,7 +15,7 @@ import requests
 from ...browser_session import jwt_expiry
 from ...oauth import merge_refresh, read_token, token_is_live, token_path, write_token
 from ...tidal_web import parse_web_headers
-from ..config import REQUEST_TIMEOUT, polite_sleep, required_env
+from ..config import REQUEST_TIMEOUT, from_config, polite_sleep, required_env_from
 from ..matching import normalize_text, romanized, track_key
 from .base import MirrorTarget, TargetAuthError
 from .provider_utils import best_candidate, chunks, iso_duration_ms, source_playlist_details
@@ -31,11 +31,12 @@ class TidalTarget(MirrorTarget):
     tag = "tidal"
     source = "tidal"
 
-    def __init__(self):
-        self.cache_file = os.getenv("TIDAL_CACHE_FILE", "tidal_resolve_cache.json")
-        web_headers = (os.getenv("TIDAL_WEB_HEADERS") or "").strip()
+    def __init__(self, config=None):
+        self._config = config
+        self.cache_file = from_config(self._config, "TIDAL_CACHE_FILE", "tidal_resolve_cache.json")
+        web_headers = (from_config(self._config, "TIDAL_WEB_HEADERS") or "").strip()
         self._browser_mode = bool(web_headers)
-        self._token_file = token_path("TIDAL_TOKEN_FILE", DEFAULT_TOKEN_FILE)
+        self._token_file = token_path("TIDAL_TOKEN_FILE", DEFAULT_TOKEN_FILE, self._config)
         if web_headers:
             try:
                 context = parse_web_headers(web_headers)
@@ -49,12 +50,12 @@ class TidalTarget(MirrorTarget):
             if expiry is not None:
                 self._tok["expires_at"] = expiry
         else:
-            configured_country = (os.getenv("TIDAL_COUNTRY_CODE") or "US").strip().upper()
+            configured_country = (from_config(self._config, "TIDAL_COUNTRY_CODE") or "US").strip().upper()
             # Older wizard versions displayed country immediately below the
             # client id, so a client secret could be pasted there by mistake.
             # Never send arbitrary token-like data as a URL query parameter.
             self.country = configured_country if re.fullmatch(r"[A-Z]{2}", configured_country) else "US"
-            self._client_id = required_env("TIDAL_CLIENT_ID")
+            self._client_id = required_env_from(self._config, "TIDAL_CLIENT_ID")
             self._tok = read_token(self._token_file)
         if not self._tok.get("access_token") and not self._tok.get("refresh_token"):
             raise RuntimeError("Missing TIDAL OAuth token; connect TIDAL in Accounts")

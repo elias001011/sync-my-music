@@ -12,8 +12,12 @@ import time
 from pathlib import Path
 
 
-def token_path(env_name: str, default: str) -> str:
-    """Resolve a provider token path, preferring an explicit environment value."""
+def token_path(env_name: str, default: str, config=None) -> str:
+    """Resolve a provider token path: the account's own config first (so a named
+    account gets its own file), then an explicit environment value."""
+    if config is not None:
+        value = config.get(env_name)
+        return default if value in (None, "") else value
     return os.getenv(env_name) or default
 
 

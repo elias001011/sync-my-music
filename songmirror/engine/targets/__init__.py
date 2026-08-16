@@ -22,74 +22,160 @@ from . import ytmusic
 
 __all__ = ["AppleMusicTarget", "AmazonMusicTarget", "DeezerTarget", "QobuzTarget",
            "SpotifyTarget", "TidalTarget", "MirrorTarget", "TargetAuthError",
-           "mirror_pair", "reconcile", "build_targets", "build_peers", "build_one", "is_peer"]
+           "mirror_pair", "reconcile", "build_targets", "build_peers", "build_one",
+           "build_account_target", "is_peer"]
 
 
-def _apple(opts):
-    from ..config import required_env
+def _apple(opts, account=None):
+    from ..config import required_env_from
     from ..logs import log_note
+    config = opts.account_config(account) if account else None
     try:
-        required_env("APPLE_BEARER_TOKEN")
-        required_env("APPLE_USER_TOKEN")
-        return AppleMusicTarget(opts.storefront, opts.cache_file)
+        required_env_from(config, "APPLE_BEARER_TOKEN")
+        required_env_from(config, "APPLE_USER_TOKEN")
+        return AppleMusicTarget(opts.storefront, opts.cache_file, config=config)
     except RuntimeError as e:
         log_note(f"Apple Music skipped: {e}", tag="apple")
         return None
 
 
-def _rest_provider(target_cls, label):
-    """Build an env-configured REST peer, logging a clean skip when absent."""
+def _rest_provider(target_cls, label, opts, account=None):
+    """Build a REST peer from the account's own config (or env for the CLI),
+    logging a clean skip when absent."""
     from ..logs import log_note
+    config = opts.account_config(account) if account else None
     try:
-        return target_cls()
+        return target_cls(config=config)
     except RuntimeError as e:
         log_note(f"{label} skipped: {e}", tag=target_cls.tag)
         return None
 
 
-# source -> builder(opts, sp) -> a ready MirrorTarget, or None when unconfigured.
-# Order matters: ISRC-rich providers first so they seed cross-provider identity.
-# `sp` (the Spotify client) is only needed by peers that read/write Spotify.
+def _apply_account(target, account_id):
+    """Give a built target its per-account identity: state namespace and, for a
+    named account, its own resolve cache file (so two accounts of the same
+    provider never share cache state). Legacy (no account) targets stay exactly
+    as before."""
+    from ..config import account_state_key
+
+    if target is None or not account_id:
+        return target
+    target.state_key = account_state_key(account_id)
+    if account_state_key(account_id) != target.source:
+        slug = account_id.replace(":", "-")
+        target.cache_file = f"{slug}_resolve_cache.json"
+    return target
+
+
+# source -> builder(opts, sp, sync_peer, songs, account) -> a ready MirrorTarget,
+# or None when unconfigured. Order matters: ISRC-rich providers first so they
+# seed cross-provider identity. `sp` (the Spotify client) is only needed by
+# peers that read/write Spotify on the legacy path. `account` is an account_id;
+# its config snapshot comes from opts.account_configs (never os.environ).
+def _spotify(opts, sp, sync_peer=False, songs=None, account=None):
+    """Build one Spotify account's target. Account-scoped passes get a client
+    minted from the account's own config (own token cache); the legacy path uses
+    the shared client the runner built. Cookie mode needs no OAuth client at all."""
+    from .. import spotify
+    from ..config import spotify_write_backend
+    from ..targets.base import TargetAuthError
+
+    config = opts.account_config(account) if account else None
+    if spotify_write_backend(config) == "cookie":
+        if not _spotify_cookie_ready(account, config):
+            return None
+        client = None
+    elif account is not None:
+        try:
+            client = spotify.client(writable=sync_peer, config=config)
+        except (RuntimeError, TargetAuthError):
+            return None
+    else:
+        client = sp
+        if client is None:
+            return None
+    return _apply_account(
+        SpotifyTarget(client, opts.spotify_cache_file, sync_peer=sync_peer, songs=songs,
+                      account=account, config=config),
+        account)
+
+
 _REGISTRY = {
-    "spotify": lambda opts, sp, sync_peer=False, songs=None: (
-        SpotifyTarget(sp, opts.spotify_cache_file, sync_peer=sync_peer, songs=songs)
-        if sp is not None or _spotify_cookie_ready() else None),
-    "tidal": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(TidalTarget, "TIDAL"),
-    "qobuz": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(QobuzTarget, "Qobuz"),
-    "deezer": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(DeezerTarget, "Deezer"),
-    "amazon": lambda opts, sp, sync_peer=False, songs=None: _rest_provider(AmazonMusicTarget, "Amazon Music"),
-    "apple": lambda opts, sp, sync_peer=False, songs=None: _apple(opts),
-    "ytmusic": lambda opts, sp, sync_peer=False, songs=None: ytmusic.build(),
+    "spotify": _spotify,
+    "tidal": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        _rest_provider(TidalTarget, "TIDAL", opts, account), account),
+    "qobuz": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        _rest_provider(QobuzTarget, "Qobuz", opts, account), account),
+    "deezer": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        _rest_provider(DeezerTarget, "Deezer", opts, account), account),
+    "amazon": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        _rest_provider(AmazonMusicTarget, "Amazon Music", opts, account), account),
+    "apple": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        _apple(opts, account), account),
+    "ytmusic": lambda opts, sp, sync_peer=False, songs=None, account=None: _apply_account(
+        ytmusic.build(opts.account_config(account) if account else None), account),
 }
 _SOURCE_ORDER = ["spotify", "tidal", "qobuz", "deezer", "amazon", "apple", "ytmusic"]
 
 
-def _spotify_cookie_ready():
+def _spotify_cookie_ready(account=None, config=None):
     from ..config import spotify_write_backend
     from ..spotify_cookie import configured
-    return spotify_write_backend() == "cookie" and configured()
+    return spotify_write_backend(config) == "cookie" and configured(account_id=account)
 
 
 def _disabled():
     return {item.strip() for item in os.getenv("DISABLED_PROVIDERS", "").split(",") if item.strip()}
 
 
+def _participants(opts):
+    """(account_id, provider) pairs for this pass: explicit accounts when the job
+    is account-scoped, else one `{provider}:default` per opted-in provider."""
+    if opts.accounts:
+        return list(opts.accounts.items())
+    wanted = {s.strip() for s in (opts.providers or "").split(",") if s.strip()}
+    return [(f"{src}:default", src) for src in _SOURCE_ORDER if not wanted or src in wanted]
+
+
 def build_targets(opts, sp=None):
-    """One-way mirror targets this run: every opted-in provider except the source
-    (opts.sync_source). An empty opts.providers means every configured provider
-    (the same 'empty = all' convention as opts.playlists, and what the UI shows).
+    """One-way mirror targets this run: every participating account except the
+    source. Legacy mode (no opts.accounts) keeps the provider-only behaviour.
     `sp` (the Spotify client) is only needed when the source is a non-Spotify
     provider, so Spotify itself becomes a writable target."""
     source = getattr(opts, "sync_source", None) or "spotify"
-    wanted = {s.strip() for s in (opts.providers or "").split(",") if s.strip()}
+    source_provider = str(source).split(":", 1)[0]
     disabled = _disabled()
-    return [t for src in _SOURCE_ORDER if src not in disabled and src != source and (not wanted or src in wanted)
-            for t in (_REGISTRY[src](opts, sp, sync_peer=True),) if t]
+    out = []
+    for account_id, src in _participants(opts):
+        # Skip the source itself: by account id (multi-account) or by provider
+        # (legacy provider-only source).
+        if src in disabled or account_id == source or (":" not in str(source) and src == source):
+            continue
+        builder = _REGISTRY.get(src)
+        if builder is None:
+            continue
+        target = builder(opts, sp, sync_peer=True, account=account_id)
+        if target:
+            out.append(target)
+    return out
+
+
+def build_account_target(account_id, opts, sp=None):
+    """One target for a specific account (live profile), or None when unknown/
+    unconfigured. Used by the web layer to browse/transfer a named account."""
+    provider = str(account_id).split(":", 1)[0]
+    builder = _REGISTRY.get(provider)
+    if not builder or provider in _disabled():
+        return None
+    return builder(opts, sp, sync_peer=False, account=account_id)
 
 
 def build_one(provider_id, opts, sp=None):
-    """Construct a single provider by id (None if unknown/unconfigured). Used by
-    the web layer to browse or transfer one specific service."""
+    """Construct a single provider by id (None if unknown/unconfigured). An id
+    containing ':' is treated as an account id (multi-account path). Used by the
+    web layer to browse or transfer one specific service."""
+    if ":" in provider_id:
+        return build_account_target(provider_id, opts, sp)
     builder = _REGISTRY.get(provider_id)
     return builder(opts, sp) if builder and provider_id not in _disabled() else None
 
@@ -102,13 +188,20 @@ def is_peer(provider_id):
 
 
 def build_peers(opts, sp, songs=None):
-    """N-way peer nodes, limited to opts.providers and to what's configured, in
-    ISRC-rich-first order. An empty opts.providers means every configured provider
-    (matching the UI, which shows every connected peer when none are explicitly
-    chosen) — so a job saved without touching the Services step still syncs rather
-    than silently finding zero peers. Needs the Spotify client for the Spotify peer.
-    `songs` (the archive conn) backs the Spotify peer's persistent ISRC cache."""
-    wanted = {s.strip() for s in (opts.providers or "").split(",") if s.strip()}
+    """N-way peer nodes for the participating accounts, in ISRC-rich-first
+    order. An empty opts.providers means every configured provider (matching the
+    UI, which shows every connected peer when none are explicitly chosen). Needs
+    the Spotify client for the Spotify peer. `songs` (the archive conn) backs the
+    Spotify peer's persistent ISRC cache."""
     disabled = _disabled()
-    return [peer for src in _SOURCE_ORDER if src not in disabled and (not wanted or src in wanted)
-            for peer in (_REGISTRY[src](opts, sp, sync_peer=True, songs=songs),) if peer]
+    out = []
+    for account_id, src in _participants(opts):
+        if src in disabled:
+            continue
+        builder = _REGISTRY.get(src)
+        if builder is None:
+            continue
+        peer = builder(opts, sp, sync_peer=True, songs=songs, account=account_id)
+        if peer:
+            out.append(peer)
+    return out

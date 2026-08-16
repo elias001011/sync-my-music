@@ -3,14 +3,31 @@ import { useState } from 'react'
 import { api, errorMessage } from '@/api'
 import { cn } from '@/lib/cn'
 import { serviceLogoId, tagDot, tagText } from '@/lib/constants'
-import type { Account, AuthKind } from '@/types'
+import type { Account, AuthKind, SurfaceName } from '@/types'
 
 import { Button } from '../ui/Button'
 import { Card } from '../ui/Card'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
 import { ServiceLogo } from '../ui/ServiceLogo'
 import { StatusPill } from '../ui/StatusPill'
+import { Toggle } from '../ui/Toggle'
 import { ConnectWizardModal } from './ConnectWizardModal'
+
+const SURFACE_LABELS: Record<SurfaceName, { label: string; hint: string }> = {
+  playlists: { label: 'Playlists', hint: 'Sync and transfer playlist content.' },
+  liked_tracks: { label: 'Liked tracks', hint: 'Import and sync saved songs.' },
+  saved_albums: { label: 'Saved albums', hint: 'Import albums saved to the library.' },
+  followed_artists: { label: 'Followed artists', hint: 'Import artists you follow.' },
+  history: { label: 'Listening history', hint: 'Import scrobbles and recap snapshots (never writes back).' },
+}
+
+const SURFACE_ORDER: SurfaceName[] = ['playlists', 'liked_tracks', 'saved_albums', 'followed_artists', 'history']
+
+const SURFACE_CAP_LABELS: Record<string, string> = {
+  rw: 'READ + WRITE',
+  r: 'READ / IMPORT',
+  '-': 'NOT SUPPORTED',
+}
 
 const SERVICE_BLURBS: Record<string, string> = {
   spotify: 'Syncs playlists through Spotify OAuth as either a source or destination.',
@@ -73,6 +90,19 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
     }
   }
 
+  const surfaceCaps = account.surface_capabilities
+  const surfaces = account.surfaces ?? {}
+
+  async function toggleSurface(surface: SurfaceName, enabled: boolean) {
+    setError(null)
+    try {
+      await api.setAccountPrefs(account.id, { surfaces: { [surface]: enabled } })
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
   return (
     <Card className={cn('flex flex-col gap-3.5 p-4 sm:p-5', borderClass(account.state))}>
       <div className="flex flex-wrap items-center gap-2.5">
@@ -114,6 +144,37 @@ export function AccountCard({ account, onChanged }: { account: Account; onChange
       )}
 
       {error && <p className="text-xs text-danger">{error}</p>}
+
+      {surfaceCaps && !account.local_snapshot && (
+        <div className="space-y-1 border-t border-border pt-3">
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <span className="font-mono text-[10px] font-bold tracking-[0.12em] text-text-3">SURFACES</span>
+            <span className="text-[11px] text-text-3">Disabling a surface stops new imports; existing data stays.</span>
+          </div>
+          {SURFACE_ORDER.filter((surface) => surfaceCaps[surface] !== undefined).map((surface) => {
+            const cap = surfaceCaps[surface] ?? '-'
+            const meta = SURFACE_LABELS[surface]
+            return (
+              <div key={surface} className="flex items-center gap-3 rounded-control px-1.5 py-1">
+                <div className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2 text-sm font-medium text-text">
+                    {meta.label}
+                    <span className={cn('rounded-chip px-1.5 py-0.5 font-mono text-[8px]',
+                      cap === 'rw' ? 'bg-success-soft text-success' : cap === 'r' ? 'bg-info-soft text-info' : 'bg-neutral-soft text-neutral')}>
+                      {SURFACE_CAP_LABELS[cap]}
+                    </span>
+                  </span>
+                  <span className="block text-[11px] text-text-3">{meta.hint}</span>
+                </div>
+                {cap !== '-' && (
+                  <Toggle hideLabel label={meta.label} checked={surfaces[surface] ?? true}
+                    onChange={(enabled) => void toggleSurface(surface, enabled)} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {!account.local_snapshot && <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <Button variant={isConnected ? 'secondary' : 'primary'} size="sm" onClick={() => setWizardOpen(true)}>

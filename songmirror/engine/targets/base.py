@@ -34,7 +34,12 @@ class MirrorTarget:
 
     name = "target"       # human label, e.g. "Apple Music"
     tag = "target"        # short log tag, e.g. "apple"
-    source = "target"     # archive source key, e.g. "apple"
+    source = "target"     # provider key, e.g. "apple"
+    # Namespace for EVERY per-provider archive key (songs rows, links, sync
+    # state, identities, order history): the bare provider for the `:default`
+    # account (identical to legacy behaviour), the account id for named
+    # accounts — so two accounts of the same provider never share state.
+    state_key = "target"
     cache_file = None     # this target's own resolution cache path (ids differ per service)
 
     def list_playlists(self):
@@ -138,7 +143,8 @@ def held_removals(target_name, playlist, tracks, max_removals):
 
 
 def mirror_pair(target, sp_tracks, sp_playlist, tgt_playlist, cache, songs, *, execute, max_removals,
-                max_adds, drain_removals=False, should_continue=None, source_key="spotify", source_name="Spotify", name=None):
+                max_adds, drain_removals=False, should_continue=None, source_key="spotify", source_name="Spotify",
+                source_state_key="spotify", name=None):
     """Reconcile one source→target playlist pair. Returns a stats dict; `clean`
     is True when everything applied with no guard tripped.
 
@@ -153,12 +159,14 @@ def mirror_pair(target, sp_tracks, sp_playlist, tgt_playlist, cache, songs, *, e
     tgt_tracks = target.playlist_tracks(tgt_playlist)
     log_section(name, f"{source_name} {len(sp_tracks)} tracks - {target.name} {len(tgt_tracks)} tracks", tag=tag)
 
-    archive.upsert_many(songs, source_key, sp_tracks)
-    archive.upsert_many(songs, target.source, tgt_tracks)
-    archive.record_order(songs, name.strip().casefold(), target.source,
+    archive.upsert_many(songs, source_state_key, sp_tracks)
+    archive.upsert_many(songs, target.state_key, tgt_tracks)
+    archive.record_order(songs, name.strip().casefold(), target.state_key,
                          [[target.track_id(t), t.get("name", ""), t.get("artist", "")] for t in tgt_tracks])
 
-    links = (archive.get_links(songs, target.source, [t.get("id") for t in sp_tracks])
+    # Links are namespaced by the account pair, so two accounts of the same
+    # provider can never overwrite each other's resolved ids.
+    links = (archive.get_links(songs, f"{source_state_key}->{target.state_key}", [t.get("id") for t in sp_tracks])
              if source_key == "spotify" else {})
     target.prefetch(sp_tracks, cache)
     to_add, to_remove = compute_diff(
@@ -199,7 +207,7 @@ def mirror_pair(target, sp_tracks, sp_playlist, tgt_playlist, cache, songs, *, e
             present.add(tid)
             methods[method] = methods.get(method, 0) + 1
     if source_key == "spotify":
-        archive.set_links(songs, target.source, new_links)  # keep the shared table Spotify-anchored
+        archive.set_links(songs, f"{source_state_key}->{target.state_key}", new_links)  # keep the shared table Spotify-anchored
 
     guard = stopped_early  # a pause mid-resolve must not advance the snapshot (a re-run finishes it)
     deferred = 0
@@ -279,7 +287,7 @@ def _normalize(track, source):
     }
 
 
-def _entry_cids(target, tracks, songs, cache, key2isrc):
+def _entry_cids(target, tracks, songs, cache, key2isrc, spotify_state_key="spotify"):
     """[(canonical_id, normalized track), ...] — one per PHYSICAL entry, in
     playlist order (so a duplicate copy yields a repeated canonical id).
 
@@ -304,11 +312,12 @@ def _entry_cids(target, tracks, songs, cache, key2isrc):
     next good read; the memory only covers for a read too degraded to derive
     one."""
     ids = [target.track_id(t) for t in tracks]
+    links_ns = f"{spotify_state_key}->{target.state_key}"
     rev = ({} if target.source == "spotify"
-           else archive.get_reverse_links(songs, target.source, ids))
-    sp_isrc = archive.get_isrcs(songs, "spotify", list(rev.values())) if rev else {}
+           else archive.get_reverse_links(songs, links_ns, ids))
+    sp_isrc = archive.get_isrcs(songs, spotify_state_key, list(rev.values())) if rev else {}
     id2isrc = target.native_isrc_map(cache)  # provider-supplied track_id -> ISRC (Apple, future providers)
-    known = archive.get_identities(songs, target.source, ids)
+    known = archive.get_identities(songs, target.state_key, ids)
     out, learned = [], {}
     for t in tracks:
         norm = _normalize(t, target.source)
@@ -332,15 +341,15 @@ def _entry_cids(target, tracks, songs, cache, key2isrc):
         elif tid and known.get(tid) != cid:
             learned[tid] = cid              # only hard ids are worth remembering
         out.append((cid, norm))
-    archive.set_identities(songs, target.source, learned)
+    archive.set_identities(songs, target.state_key, learned)
     return out
 
 
-def _canonicalize(target, tracks, songs, cache, key2isrc):
+def _canonicalize(target, tracks, songs, cache, key2isrc, spotify_state_key="spotify"):
     """{canonical_id: normalized track} for one provider's current tracks —
     first occurrence wins, so duplicate copies collapse to one membership."""
     out = {}
-    for cid, norm in _entry_cids(target, tracks, songs, cache, key2isrc):
+    for cid, norm in _entry_cids(target, tracks, songs, cache, key2isrc, spotify_state_key):
         out.setdefault(cid, norm)
     return out
 
@@ -438,25 +447,28 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
     tripped (only then is the canonical snapshot advanced)."""
     key = link_key or name.casefold()
     started = time.monotonic()
-    prev = {p.source: archive.get_playlist_state(songs, key, p.source) for p in peers}
+    # The Spotify anchor for reverse-link/ISRC lookups: whichever peer IS the
+    # Spotify account in this run (per-account namespace when named).
+    spotify_state_key = next((p.state_key for p in peers if p.source == "spotify"), "spotify")
+    prev = {p.state_key: archive.get_playlist_state(songs, key, p.state_key) for p in peers}
 
-    canon = {}         # source -> {canonical_id: normalized track}
-    per_entry = {}     # source -> [(canonical_id, norm)] for EVERY physical entry
-    present = {}       # source -> set of ALL current target ids (not canonical-deduped)
+    canon = {}         # state_key -> {canonical_id: normalized track}
+    per_entry = {}     # state_key -> [(canonical_id, norm)] for EVERY physical entry
+    present = {}       # state_key -> set of ALL current target ids (not canonical-deduped)
     key2isrc = {}      # track_key -> ISRC, seeded by any ISRC-bearing provider (peers are ISRC-rich first)
     for p in peers:
         raw = p.playlist_tracks(playlists[p.source])
-        archive.upsert_many(songs, p.source, raw)
-        archive.record_order(songs, key, p.source,
+        archive.upsert_many(songs, p.state_key, raw)
+        archive.record_order(songs, key, p.state_key,
                              [[p.track_id(t), t.get("name", ""),
                                t.get("artist") or ", ".join(t.get("artists") or [])] for t in raw])
-        present[p.source] = {p.track_id(t) for t in raw if p.track_id(t)}
-        per_entry[p.source] = _entry_cids(p, raw, songs, caches[p.source], key2isrc)
+        present[p.state_key] = {p.track_id(t) for t in raw if p.track_id(t)}
+        per_entry[p.state_key] = _entry_cids(p, raw, songs, caches[p.state_key], key2isrc, spotify_state_key)
         fold = {}
-        for cid, norm in per_entry[p.source]:
+        for cid, norm in per_entry[p.state_key]:
             fold.setdefault(cid, norm)  # first occurrence wins (dedupe within a provider)
-        canon[p.source] = fold
-        for cid, norm in per_entry[p.source]:
+        canon[p.state_key] = fold
+        for cid, norm in per_entry[p.state_key]:
             if cid.startswith("i:"):  # any provider that resolved an ISRC anchors the rest
                 # Every key the song answers to, not just the joined credit: a peer
                 # that lists one artist of several, or spells a transliterated name
@@ -477,42 +489,42 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
                 merged.setdefault(alias.get(cid, cid), norm)
             canon[src] = merged
         prev = {src: {alias.get(cid, cid) for cid in ids} for src, ids in prev.items()}
-    present_keys = {  # source -> track_keys already on the provider (dupe guard)
+    present_keys = {  # state_key -> track_keys already on the provider (dupe guard)
         src: set().union(*(spotify_track_keys(n) for n in by_cid.values())) if by_cid else set()
         for src, by_cid in canon.items()}
     cur = {src: set(m) for src, m in canon.items()}
 
     repr_ = {}  # canonical_id -> representative track (peers are ordered spotify-first for ISRC-rich reprs)
     for p in peers:
-        for cid, norm in canon[p.source].items():
+        for cid, norm in canon[p.state_key].items():
             repr_.setdefault(cid, norm)
 
     collapsed = set()
     for p in peers:
-        base = prev[p.source]
-        if base and (not cur[p.source] or len(cur[p.source]) < COLLAPSE_FRACTION * len(base)):
-            collapsed.add(p.source)
-            log_warn(f"{name}: {p.name} read {len(cur[p.source])} vs baseline {len(base)} — "
+        base = prev[p.state_key]
+        if base and (not cur[p.state_key] or len(cur[p.state_key]) < COLLAPSE_FRACTION * len(base)):
+            collapsed.add(p.state_key)
+            log_warn(f"{name}: {p.name} read {len(cur[p.state_key])} vs baseline {len(base)} — "
                      "ignoring its removals this pass", tag=p.tag)
 
     desired, plan = _merge(prev, cur, collapsed)
-    log_section(name, " / ".join(f"{p.name} {len(cur[p.source])}" for p in peers), tag="sync")
+    log_section(name, " / ".join(f"{p.name} {len(cur[p.state_key])}" for p in peers), tag="sync")
 
     stats = {"clean": execute and not collapsed, "added": 0, "removed": 0, "missing": 0,
              "held": 0, "deferred": 0, "removals_skipped": 0, "held_removals": []}
     removals_capped = False   # any provider's removals hit the cap -> freeze the baseline
     interrupted = False       # a Pause/Stop mid-pass -> freeze the baseline too (partial advance is unsafe)
-    new_links = {p.source: {} for p in peers}
-    new_state = {}   # source -> canonical membership to persist (only when the baseline is safe)
+    new_links = {p.state_key: {} for p in peers}
+    new_state = {}   # state_key -> canonical membership to persist (only when the baseline is safe)
     for p in peers:
         if should_continue and should_continue() != "run":
             interrupted = True  # Pause/Stop — skip the remaining providers this pass
             break
-        if p.source in collapsed:
+        if p.state_key in collapsed:
             continue  # untrusted read: don't write to it this pass (guards adds too, not just removes)
-        add_ids, remove_ids = plan[p.source]
-        cache = caches[p.source]
-        seen = set(present[p.source])  # every id already on the provider (+ ids queued this pass)
+        add_ids, remove_ids = plan[p.state_key]
+        cache = caches[p.state_key]
+        seen = set(present[p.state_key])  # every id already on the provider (+ ids queued this pass)
 
         # ADD: resolve each missing canonical id to this provider's track id.
         add_norms = [repr_[cid] for cid in add_ids]
@@ -525,7 +537,7 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
             if should_continue and should_continue() != "run":
                 interrupted = True  # Pause/Stop — defer this provider's remaining adds
                 break
-            if spotify_track_keys(norm) & present_keys[p.source]:
+            if spotify_track_keys(norm) & present_keys[p.state_key]:
                 continue  # song already on the provider under a different id — no dupe, and no wasted search
             try:
                 tid, method = p.resolve(norm, cache)
@@ -540,10 +552,10 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
             if tid in seen:
                 continue  # resolved to a track already present (belt-and-suspenders with the key guard)
             seen.add(tid)
-            present_keys[p.source] |= spotify_track_keys(norm)  # so a second add of the same song this pass is caught
+            present_keys[p.state_key] |= spotify_track_keys(norm)  # so a second add of the same song this pass is caught
             additions.append((tid, method or "search", norm))
             if norm["_source"] == "spotify" and norm["_raw"].get("id"):
-                new_links[p.source][norm["_raw"]["id"]] = tid
+                new_links[p.state_key][norm["_raw"]["id"]] = tid
 
         deferred = 0
         if len(additions) > max_adds:
@@ -553,7 +565,7 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
             additions, stats["clean"] = additions[:max_adds], False
 
         # REMOVE: canonical ids that left the set, guarded by protect_removals + cap.
-        remove_pairs = [(cid, canon[p.source][cid]) for cid in remove_ids]
+        remove_pairs = [(cid, canon[p.state_key][cid]) for cid in remove_ids]
         safe, held = protect_removals([n for _, n in remove_pairs], not_found)
         if len(safe) > max_removals:
             # Cap hit: freezing the baseline (removals_capped) is what keeps a
@@ -598,7 +610,7 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
         # we removed. Added tracks re-materialize (under their own canonical) on
         # the next read — recording only what's actually present avoids a stale
         # snapshot ever triggering a phantom removal.
-        new_state[p.source] = cur[p.source] - removed_cids
+        new_state[p.state_key] = cur[p.state_key] - removed_cids
 
         stats["added"] += len(additions)
         stats["removed"] += len(safe)
@@ -608,7 +620,7 @@ def reconcile(peers, name, playlists, caches, songs, *, execute, max_removals, m
 
     if execute:
         for p in peers:
-            archive.set_links(songs, p.source, new_links[p.source])
+            archive.set_links(songs, f"{spotify_state_key}->{p.state_key}", new_links[p.state_key])
         # Advance the removal baseline whenever reads were trusted and no removal was
         # capped — deferred ADDS don't block it (they stay in `desired` via union_prev
         # and re-add next pass), which is what lets removals activate on the pass after

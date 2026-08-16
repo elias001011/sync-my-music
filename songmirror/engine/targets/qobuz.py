@@ -12,7 +12,7 @@ import time
 import requests
 
 from ...qobuz_web import parse_web_request
-from ..config import REQUEST_TIMEOUT, polite_sleep, required_env
+from ..config import REQUEST_TIMEOUT, from_config, polite_sleep, required_env_from
 from ..matching import normalize_text, romanized, track_key
 from .base import MirrorTarget, TargetAuthError
 from .provider_utils import best_candidate, source_playlist_details
@@ -50,9 +50,10 @@ class QobuzTarget(MirrorTarget):
     tag = "qobuz"
     source = "qobuz"
 
-    def __init__(self):
-        self.cache_file = os.getenv("QOBUZ_CACHE_FILE", "qobuz_resolve_cache.json")
-        web_request = (os.getenv("QOBUZ_WEB_REQUEST") or "").strip()
+    def __init__(self, config=None):
+        self._config = config
+        self.cache_file = from_config(self._config, "QOBUZ_CACHE_FILE", "qobuz_resolve_cache.json")
+        web_request = (from_config(self._config, "QOBUZ_WEB_REQUEST") or "").strip()
         self._browser_mode = bool(web_request)
         if web_request:
             try:
@@ -64,9 +65,9 @@ class QobuzTarget(MirrorTarget):
             self._user_id = credentials.get("user_id")
         else:
             # Backward-compatible approved partner configuration.
-            self._app_id = required_env("QOBUZ_APP_ID")
-            self._user_token = required_env("QOBUZ_USER_AUTH_TOKEN")
-            self._user_id = required_env("QOBUZ_USER_ID")
+            self._app_id = required_env_from(self._config, "QOBUZ_APP_ID")
+            self._user_token = required_env_from(self._config, "QOBUZ_USER_AUTH_TOKEN")
+            self._user_id = required_env_from(self._config, "QOBUZ_USER_ID")
         self._session = requests.Session()
 
     def _request(self, method, endpoint, *, params=None):

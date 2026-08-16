@@ -14,8 +14,22 @@ from ...services.syncs import SyncJob
 
 router = APIRouter()
 
-_FIELDS = {"name", "enabled", "mode", "source", "providers", "playlists",
+_FIELDS = {"name", "enabled", "mode", "source", "providers", "accounts", "playlists",
            "interval", "max_adds", "max_removals", "apply_large_removals", "download", "id"}
+
+
+def _normalize_accounts(values: dict) -> dict:
+    """Derive `accounts` from a legacy `providers` value so jobs saved by an
+    older UI keep working: each provider maps to its `{provider}:default`
+    account (the migrated default)."""
+    if values.get("accounts"):
+        return values
+    providers = str(values.get("providers") or "")
+    if not providers.strip():
+        return values
+    values = dict(values)
+    values["accounts"] = ",".join(f"{p.strip()}:default" for p in providers.split(",") if p.strip())
+    return values
 
 
 def _job_from(values):
@@ -37,7 +51,7 @@ def list_syncs(request: Request):
 
 @router.post("/api/syncs")
 async def create_sync(request: Request, values: dict = Body(...)):
-    job = request.app.state.syncs.upsert(_job_from(values))
+    job = request.app.state.syncs.upsert(_job_from(_normalize_accounts(values)))
     await request.app.state.sync.reconcile()
     return asdict(job)
 
@@ -47,7 +61,7 @@ async def update_sync(job_id: str, request: Request, values: dict = Body(...)):
     existing = request.app.state.syncs.get(job_id)
     if existing is None:
         return JSONResponse({"detail": "not found"}, status_code=404)
-    job = request.app.state.syncs.upsert(_job_from({**asdict(existing), **values, "id": job_id}))
+    job = request.app.state.syncs.upsert(_job_from(_normalize_accounts({**asdict(existing), **values, "id": job_id})))
     await request.app.state.sync.reconcile()
     return asdict(job)
 

@@ -226,6 +226,22 @@ class TransferService:
                 c["resolved"] = True
         return True
 
+    def _is_canonical_slot(self, provider_id) -> bool:
+        """Whether an id refers to a restored/imported local snapshot (read-only
+        source) rather than a live account. Live accounts — including `:default`
+        profiles and named multi-account profiles — build real engine targets."""
+        if self._database is None:
+            return False
+        if provider_id == "musify" or provider_id.startswith("musify:"):
+            return True
+        if ":" not in provider_id:
+            return False
+        row = next((r for r in self._database.accounts() if r["id"] == provider_id), None)
+        if not row:
+            return False
+        return str(row.get("auth_mode") or "") in ("official-export", "sync-account-restore",
+                                                    "hive-backup", "aggregate-import", "history-import")
+
     async def _run(self, job, spec):
         if job.get("_control") == "stop":  # stopped while still queued — never start
             job["status"] = "stopped"
@@ -235,8 +251,7 @@ class TransferService:
         self._settings.apply_to_env()
         opts = parse_args([])
         for side, prov in (("source", spec["source_provider"]), ("destination", spec["dest_provider"])):
-            source_only = side == "source" and self._database is not None and (
-                prov == "musify" or ":" in prov)
+            source_only = side == "source" and self._is_canonical_slot(prov)
             if not is_peer(prov) and not source_only:  # e.g. Jellyfin — browse-only
                 job["status"], job["error"] = "error", f"'{prov}' can't be a transfer {side} — it's a browse-only service."
                 self._emit("warn", f"transfer: {job['error']}", "transfer")
@@ -287,14 +302,24 @@ class TransferService:
             self._emit("warn", f"transfer failed: {job['error']}", "transfer")
 
     def _build(self, provider_id, opts):
+        """One transfer side. Canonical snapshots (Musify/restored slots) read
+        from the database; everything else is a live account — the `:default`
+        profile or a named profile, each built from its own config snapshot so
+        two accounts of the same provider never share credentials/caches."""
         if (provider_id == "musify" or provider_id.startswith("musify:")) and self._database is not None:
             from .musify import MusifyCanonicalTarget
             account_id = "musify:default" if provider_id == "musify" else provider_id
             return MusifyCanonicalTarget(self._database, account_id)
-        if ":" in provider_id and self._database is not None:
+        if self._is_canonical_slot(provider_id):
             from .canonical_target import CanonicalAccountTarget
             account = next((row for row in self._database.accounts() if row["id"] == provider_id), None)
             return CanonicalAccountTarget(self._database, provider_id, account["label"]) if account else None
+        if ":" in provider_id:
+            # A live account profile: give the engine its own config snapshot.
+            opts.accounts = {provider_id: str(provider_id).split(":", 1)[0]}
+            opts.account_configs = {provider_id: self._settings.account_config_snapshot(provider_id)}
+            from ..engine.targets import build_account_target
+            return build_account_target(provider_id, opts)
         sp = None
         if provider_id == "spotify" and spotify_write_backend() != "cookie":
             try:

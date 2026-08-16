@@ -18,7 +18,7 @@ from ...amazon_music_web import (
     ENDPOINT as WEB_ENDPOINT,
 )
 from ...oauth import merge_refresh, read_token, token_is_live, token_path, write_token
-from ..config import REQUEST_TIMEOUT, polite_sleep, required_env
+from ..config import REQUEST_TIMEOUT, from_config, polite_sleep, required_env_from
 from ..matching import normalize_text, romanized, track_key
 from .base import MirrorTarget, TargetAuthError
 from .provider_utils import best_candidate, chunks, source_playlist_details
@@ -139,20 +139,21 @@ class AmazonMusicTarget(MirrorTarget):
     tag = "amazon"
     source = "amazon"
 
-    def __init__(self):
-        self.cache_file = os.getenv("AMAZON_MUSIC_CACHE_FILE", "amazon_music_resolve_cache.json")
+    def __init__(self, config=None):
+        self._config = config
+        self.cache_file = from_config(self._config, "AMAZON_MUSIC_CACHE_FILE", "amazon_music_resolve_cache.json")
         self._web = None
-        web_headers = (os.getenv("AMAZON_MUSIC_WEB_HEADERS") or "").strip()
-        renewal_request = (os.getenv("AMAZON_MUSIC_RENEWAL_REQUEST") or "").strip()
+        web_headers = (from_config(self._config, "AMAZON_MUSIC_WEB_HEADERS") or "").strip()
+        renewal_request = (from_config(self._config, "AMAZON_MUSIC_RENEWAL_REQUEST") or "").strip()
         if web_headers or renewal_request:
             try:
                 self._web = AmazonMusicWebClient(
                     web_headers,
                     renewal_request=renewal_request,
                     token_file=token_path(
-                        "AMAZON_MUSIC_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE
+                        "AMAZON_MUSIC_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE, self._config
                     ),
-                    endpoint=os.getenv("AMAZON_MUSIC_WEB_ENDPOINT") or WEB_ENDPOINT,
+                    endpoint=from_config(self._config, "AMAZON_MUSIC_WEB_ENDPOINT") or WEB_ENDPOINT,
                 )
             except ValueError as exc:
                 raise RuntimeError(f"Invalid Amazon Music web session: {exc}") from exc
@@ -160,10 +161,10 @@ class AmazonMusicTarget(MirrorTarget):
 
         # Approved partner profiles can still use the documented API when no
         # web-player session is configured.
-        self._client_id = required_env("AMAZON_MUSIC_CLIENT_ID")
-        self._client_secret = required_env("AMAZON_MUSIC_CLIENT_SECRET")
-        self._api_key = required_env("AMAZON_MUSIC_API_KEY")
-        self._token_file = token_path("AMAZON_MUSIC_TOKEN_FILE", DEFAULT_TOKEN_FILE)
+        self._client_id = required_env_from(self._config, "AMAZON_MUSIC_CLIENT_ID")
+        self._client_secret = required_env_from(self._config, "AMAZON_MUSIC_CLIENT_SECRET")
+        self._api_key = required_env_from(self._config, "AMAZON_MUSIC_API_KEY")
+        self._token_file = token_path("AMAZON_MUSIC_TOKEN_FILE", DEFAULT_TOKEN_FILE, self._config)
         self._tok = read_token(self._token_file)
         if not self._tok.get("access_token") and not self._tok.get("refresh_token"):
             raise RuntimeError("Missing Amazon Music OAuth token; connect Amazon Music in Accounts")

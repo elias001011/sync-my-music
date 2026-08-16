@@ -249,6 +249,35 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
     "sonora": {"library_read": True, "playlist_read": True, "playlist_create": True, "playlist_write": True},
 }
 
+# What each provider can actually do per surface, as read/write pairs. This is
+# the honest capability matrix the UI and the sync engine consult: a surface
+# the connector cannot write is offered as a backup/source only, never as a
+# destination. `history` is inbound-only everywhere (recaps never write back).
+SURFACE_CAPABILITIES: dict[str, dict[str, str]] = {
+    "spotify": {"playlists": "rw", "liked_tracks": "r", "saved_albums": "r",
+                 "followed_artists": "r", "history": "r"},
+    "ytmusic": {"playlists": "rw", "liked_tracks": "r", "saved_albums": "-",
+                 "followed_artists": "-", "history": "r"},
+    "tidal": {"playlists": "rw", "liked_tracks": "-", "saved_albums": "-",
+               "followed_artists": "-", "history": "-"},
+    "qobuz": {"playlists": "rw", "liked_tracks": "-", "saved_albums": "-",
+               "followed_artists": "-", "history": "-"},
+    "deezer": {"playlists": "rw", "liked_tracks": "-", "saved_albums": "-",
+                "followed_artists": "-", "history": "-"},
+    "amazon": {"playlists": "rw", "liked_tracks": "-", "saved_albums": "-",
+                "followed_artists": "-", "history": "-"},
+    "apple": {"playlists": "rw", "liked_tracks": "-", "saved_albums": "-",
+               "followed_artists": "-", "history": "-"},
+    "jellyfin": {"playlists": "r", "liked_tracks": "-", "saved_albums": "-",
+                  "followed_artists": "-", "history": "-"},
+    "musify": {"playlists": "r", "liked_tracks": "r", "saved_albums": "r",
+                "followed_artists": "r", "history": "r"},
+    "sonora": {"playlists": "rw", "liked_tracks": "r", "saved_albums": "r",
+                "followed_artists": "r", "history": "r"},
+}
+
+SURFACES = ("playlists", "liked_tracks", "saved_albums", "followed_artists", "history")
+
 MIN_LISTENING_RETENTION_YEARS = 1
 MAX_LISTENING_RETENTION_YEARS = 10
 DEFAULT_LISTENING_RETENTION_YEARS = 3
@@ -295,10 +324,16 @@ class MusicDatabase:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
+            # Per-account pause switch: an account can be disabled without
+            # deleting its imported data. Existing rows default to enabled.
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(service_accounts)").fetchall()]
+            if "enabled" not in cols:
+                conn.execute("ALTER TABLE service_accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
             conn.execute("PRAGMA optimize")
 
     def sync_account(self, provider: str, label: str, status: str, auth_mode: str | None = None,
-                     account_id: str | None = None, is_default: bool | None = None) -> dict[str, Any]:
+                     account_id: str | None = None, is_default: bool | None = None,
+                     enabled: bool | None = None) -> dict[str, Any]:
         now = _now()
         account_id = account_id or f"{provider}:default"
         if not account_id.startswith(f"{provider}:"):
@@ -307,22 +342,84 @@ class MusicDatabase:
         capabilities = PROVIDER_CAPABILITIES.get(provider, {"library_read": False, "playlist_read": False,
                                                                "playlist_create": False, "playlist_write": False})
         with self.connect() as conn:
+            if enabled is None:
+                existing = conn.execute("SELECT enabled FROM service_accounts WHERE id=?", (account_id,)).fetchone()
+                enabled = bool(existing["enabled"]) if existing else True
             conn.execute(
                 """INSERT INTO service_accounts
-                   (id, provider, label, status, auth_mode, capabilities, is_default, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (id, provider, label, status, auth_mode, capabilities, is_default, enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET label=excluded.label, status=excluded.status,
                      auth_mode=excluded.auth_mode, capabilities=excluded.capabilities, updated_at=excluded.updated_at""",
-                (account_id, provider, label, status, auth_mode, json.dumps(capabilities), int(default), now, now),
+                (account_id, provider, label, status, auth_mode, json.dumps(capabilities),
+                 int(default), int(enabled), now, now),
             )
         return {"id": account_id, "provider": provider, "label": label, "status": status,
-                "capabilities": capabilities, "is_default": default}
+                "capabilities": capabilities, "is_default": default, "enabled": bool(enabled)}
 
     def accounts(self) -> list[dict[str, Any]]:
+        """Every known account with its imported-data counts and last update."""
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM service_accounts ORDER BY provider, label").fetchall()
+            rows = conn.execute(
+                """SELECT sa.*,
+                          (SELECT COUNT(*) FROM service_tracks st WHERE st.account_id=sa.id) tracks,
+                          (SELECT COUNT(*) FROM collection_mirrors cm WHERE cm.account_id=sa.id) playlists,
+                          (SELECT COUNT(*) FROM surface_items si WHERE si.account_id=sa.id) surfaces,
+                          (SELECT COUNT(*) FROM listens le WHERE le.account_id=sa.id) +
+                          (SELECT COUNT(*) FROM listening_aggregates la WHERE la.account_id=sa.id) listens
+                   FROM service_accounts sa ORDER BY sa.provider, sa.label""").fetchall()
         return [{**dict(row), "capabilities": json.loads(row["capabilities"]),
                  "is_default": bool(row["is_default"])} for row in rows]
+
+    def set_account_enabled(self, account_id: str, enabled: bool) -> dict[str, Any]:
+        """Pause/resume one account without deleting its imported data."""
+        with self.connect() as conn:
+            cur = conn.execute("UPDATE service_accounts SET enabled=?, updated_at=? WHERE id=?",
+                               (int(bool(enabled)), _now(), account_id))
+            if not cur.rowcount:
+                raise KeyError("account not found")
+        return {"id": account_id, "enabled": bool(enabled)}
+
+    def rename_account(self, account_id: str, label: str) -> dict[str, Any]:
+        """Rename an account slot. The id stays stable so jobs, links and recap
+        rows keep pointing at the same account."""
+        label = str(label or "").strip()
+        if not label:
+            raise ValueError("label cannot be empty")
+        with self.connect() as conn:
+            cur = conn.execute("UPDATE service_accounts SET label=?, updated_at=? WHERE id=?",
+                               (label, _now(), account_id))
+            if not cur.rowcount:
+                raise KeyError("account not found")
+        return {"id": account_id, "label": label}
+
+    def delete_account(self, account_id: str) -> dict[str, Any]:
+        """Remove exactly one account slot and the data that only it owns.
+
+        Canonical entities (artists/albums/tracks/collections) still referenced
+        by another account are deliberately kept: only orphans are garbage
+        collected after the account-scoped rows go."""
+        with self.connect() as conn:
+            if not conn.execute("SELECT 1 FROM service_accounts WHERE id=?", (account_id,)).fetchone():
+                raise KeyError("account not found")
+            # Account-scoped rows first (listens keep canonical tracks alive
+            # through FK, so they must go before the track GC).
+            for table in ("surface_items", "service_tracks", "listening_aggregates",
+                          "listens", "collection_mirrors"):
+                conn.execute(f"DELETE FROM {table} WHERE account_id=?", (account_id,))
+            conn.execute("DELETE FROM service_accounts WHERE id=?", (account_id,))
+            # Orphan GC — never touches rows another account still references.
+            conn.execute(
+                """DELETE FROM collections WHERE id NOT IN (SELECT DISTINCT collection_id FROM collection_mirrors)""")
+            conn.execute(
+                """DELETE FROM tracks WHERE id NOT IN (
+                     SELECT track_id FROM service_tracks
+                     UNION SELECT track_id FROM collection_items
+                     UNION SELECT track_id FROM listens
+                     UNION SELECT track_id FROM listening_aggregates)""")
+            conn.execute("DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM tracks WHERE album_id IS NOT NULL)")
+            conn.execute("DELETE FROM artists WHERE id NOT IN (SELECT artist_id FROM tracks WHERE artist_id IS NOT NULL)")
+        return {"account_id": account_id, "deleted": True}
 
     def export_account_backup(self, account_id: str) -> dict[str, Any]:
         """Portable canonical snapshot for one account, excluding credentials."""
@@ -762,13 +859,28 @@ class MusicDatabase:
             "deleted_aggregates": aggregates,
         }
 
-    def recap_history(self, years: int | None = None, now: datetime | None = None) -> dict[str, Any]:
-        """Compact month summaries for the configured recap history window."""
+    @staticmethod
+    def _account_clause(account_ids: Iterable[str] | None) -> tuple[str, list[str]]:
+        """(sql fragment, params) restricting a listens/aggregates query to the
+        given account ids. Empty/None means every account — the default recap."""
+        ids = [a for a in (account_ids or []) if a]
+        if not ids:
+            return "", []
+        marks = ",".join("?" * len(ids))
+        return f" AND account_id IN ({marks})", list(ids)
+
+    def recap_history(self, years: int | None = None, now: datetime | None = None,
+                      account_ids: Iterable[str] | None = None) -> dict[str, Any]:
+        """Compact month summaries for the configured recap history window.
+
+        `account_ids` filters the combined month totals to those accounts; empty
+        means the unified recap across every account."""
         years = listening_retention_years(years)
         now = now or datetime.now(timezone.utc)
         cutoff_year = now.year - years + 1
         cutoff = int(datetime(cutoff_year, 1, 1, tzinfo=timezone.utc).timestamp())
         end = int(datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).timestamp())
+        account_sql, account_params = self._account_clause(account_ids)
         with self.connect() as conn:
             rows = conn.execute(
                 """WITH combined AS (
@@ -778,7 +890,8 @@ class MusicDatabase:
                             COUNT(*) plays,
                             SUM(COALESCE(l.listened_ms, t.duration_ms, 0)) listened_ms
                      FROM listens l JOIN tracks t ON t.id=l.track_id
-                     WHERE listened_at >= ? AND listened_at < ?
+                     WHERE listened_at >= ? AND listened_at < ?""" + account_sql +
+                """
                      GROUP BY year, month, l.track_id
                      UNION ALL
                      SELECT CAST(strftime('%Y', period_start, 'unixepoch') AS INTEGER) year,
@@ -786,13 +899,14 @@ class MusicDatabase:
                             la.track_id track_id, t.artist_id artist_id,
                             SUM(play_count) plays, SUM(listened_ms) listened_ms
                      FROM listening_aggregates la JOIN tracks t ON t.id=la.track_id
-                     WHERE period_start >= ? AND period_start < ?
+                     WHERE period_start >= ? AND period_start < ?""" + account_sql +
+                """
                      GROUP BY year, month, la.track_id
                    )
                    SELECT year, month, SUM(plays) plays, SUM(listened_ms) listened_ms,
                           COUNT(DISTINCT track_id) tracks, COUNT(DISTINCT artist_id) artists
                    FROM combined GROUP BY year, month ORDER BY year DESC, month DESC""",
-                (cutoff, end, cutoff, end),
+                [cutoff, end, *account_params, cutoff, end, *account_params],
             ).fetchall()
         return {
             "retention_years": years,
@@ -840,7 +954,12 @@ class MusicDatabase:
             counts["listened_ms"] = event_ms + aggregate_ms
         return counts
 
-    def recap(self, year: int | None = None, month: int | None = None) -> dict[str, Any]:
+    def recap(self, year: int | None = None, month: int | None = None,
+              account_ids: Iterable[str] | None = None) -> dict[str, Any]:
+        """Recap for a year/month. `account_ids` restricts every headline, ranking
+        and breakdown to those accounts (empty means the unified recap); events
+        and snapshots are never double counted — each side is filtered by its own
+        account column and summed once."""
         year = year or datetime.now(timezone.utc).year
         start = datetime(year, month or 1, 1, tzinfo=timezone.utc)
         if month == 12:
@@ -849,69 +968,98 @@ class MusicDatabase:
             end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
         else:
             end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-        args = (int(start.timestamp()), int(end.timestamp()))
+        start_ts, end_ts = int(start.timestamp()), int(end.timestamp())
+        account_sql, account_params = self._account_clause(account_ids)
+        args = (start_ts, end_ts)
         with self.connect() as conn:
             event_headline = conn.execute(
                 """SELECT COUNT(*) plays, COUNT(DISTINCT l.track_id) tracks,
                           COUNT(DISTINCT t.artist_id) artists,
                           COALESCE(SUM(COALESCE(l.listened_ms, t.duration_ms, 0)), 0) listened_ms
                    FROM listens l JOIN tracks t ON t.id=l.track_id
-                   WHERE l.listened_at >= ? AND l.listened_at < ?""", args).fetchone()
+                   WHERE l.listened_at >= ? AND l.listened_at < ?""" + account_sql,
+                [*args, *account_params]).fetchone()
             aggregate_headline = conn.execute(
                 """SELECT COALESCE(SUM(play_count), 0) plays, COUNT(DISTINCT track_id) tracks,
                           COALESCE(SUM(listened_ms), 0) listened_ms
-                   FROM listening_aggregates WHERE period_start < ? AND period_end > ?""", (args[1], args[0])).fetchone()
+                   FROM listening_aggregates WHERE period_start < ? AND period_end > ?""" + account_sql,
+                [end_ts, start_ts, *account_params]).fetchone()
             top_tracks = conn.execute(
                 """WITH combined AS (
                      SELECT track_id, COUNT(*) plays, SUM(COALESCE(l.listened_ms, t.duration_ms, 0)) listened_ms
-                     FROM listens l JOIN tracks t ON t.id=l.track_id WHERE listened_at >= ? AND listened_at < ? GROUP BY track_id
+                     FROM listens l JOIN tracks t ON t.id=l.track_id
+                     WHERE listened_at >= ? AND listened_at < ?""" + account_sql +
+                """ GROUP BY track_id
                      UNION ALL
                      SELECT track_id, SUM(play_count), SUM(listened_ms) FROM listening_aggregates
-                     WHERE period_start < ? AND period_end > ? GROUP BY track_id
+                     WHERE period_start < ? AND period_end > ?""" + account_sql +
+                """ GROUP BY track_id
                    ) SELECT t.id, t.title, ar.name artist, SUM(c.plays) plays, SUM(c.listened_ms) listened_ms
                    FROM combined c JOIN tracks t ON t.id=c.track_id JOIN artists ar ON ar.id=t.artist_id
-                   GROUP BY t.id ORDER BY plays DESC, listened_ms DESC LIMIT 10""", (*args, args[1], args[0])).fetchall()
+                   GROUP BY t.id ORDER BY plays DESC, listened_ms DESC LIMIT 10""",
+                [*args, *account_params, end_ts, start_ts, *account_params]).fetchall()
             top_artists = conn.execute(
                 """WITH combined AS (
-                     SELECT track_id, COUNT(*) plays FROM listens WHERE listened_at >= ? AND listened_at < ? GROUP BY track_id
+                     SELECT track_id, COUNT(*) plays FROM listens
+                     WHERE listened_at >= ? AND listened_at < ?""" + account_sql +
+                """ GROUP BY track_id
                      UNION ALL
                      SELECT track_id, SUM(play_count) FROM listening_aggregates
-                     WHERE period_start < ? AND period_end > ? GROUP BY track_id
+                     WHERE period_start < ? AND period_end > ?""" + account_sql +
+                """ GROUP BY track_id
                    ) SELECT ar.id, ar.name, SUM(c.plays) plays, COUNT(DISTINCT t.id) tracks
                    FROM combined c JOIN tracks t ON t.id=c.track_id JOIN artists ar ON ar.id=t.artist_id
-                   GROUP BY ar.id ORDER BY plays DESC LIMIT 10""", (*args, args[1], args[0])).fetchall()
+                   GROUP BY ar.id ORDER BY plays DESC LIMIT 10""",
+                [*args, *account_params, end_ts, start_ts, *account_params]).fetchall()
             event_services = conn.execute(
-                """SELECT source, COUNT(*) plays, SUM(COALESCE(l.listened_ms, t.duration_ms, 0)) listened_ms
+                """SELECT l.account_id, sa.label account_label, l.source,
+                          COUNT(*) plays, SUM(COALESCE(l.listened_ms, t.duration_ms, 0)) listened_ms
                    FROM listens l JOIN tracks t ON t.id=l.track_id
-                   WHERE l.listened_at >= ? AND l.listened_at < ? GROUP BY source""", args).fetchall()
+                   LEFT JOIN service_accounts sa ON sa.id=l.account_id
+                   WHERE l.listened_at >= ? AND l.listened_at < ?""" + account_sql +
+                """ GROUP BY l.account_id, l.source""",
+                [*args, *account_params]).fetchall()
             aggregate_services = conn.execute(
-                """SELECT source, SUM(play_count) plays, SUM(listened_ms) listened_ms FROM listening_aggregates
-                   WHERE period_start < ? AND period_end > ? GROUP BY source""", (args[1], args[0])).fetchall()
+                """SELECT la.account_id, sa.label account_label, la.source,
+                          SUM(play_count) plays, SUM(listened_ms) listened_ms
+                   FROM listening_aggregates la
+                   LEFT JOIN service_accounts sa ON sa.id=la.account_id
+                   WHERE la.period_start < ? AND la.period_end > ?""" + account_sql +
+                """ GROUP BY la.account_id, la.source""",
+                [end_ts, start_ts, *account_params]).fetchall()
             service_totals: dict[str, dict[str, Any]] = {}
             for row in [*event_services, *aggregate_services]:
-                item = service_totals.setdefault(row["source"], {"source": row["source"], "plays": 0, "listened_ms": 0})
+                key = f"{row['account_id'] or ''}|{row['source']}"
+                item = service_totals.setdefault(key, {
+                    "source": row["source"], "account_id": row["account_id"],
+                    "account_label": row["account_label"] or row["account_id"] or row["source"],
+                    "plays": 0, "listened_ms": 0,
+                })
                 item["plays"] += row["plays"] or 0
                 item["listened_ms"] += row["listened_ms"] or 0
             event_months = conn.execute(
                 """SELECT CAST(strftime('%m', datetime(listened_at, 'unixepoch')) AS INTEGER) month, COUNT(*) plays
-                   FROM listens WHERE listened_at >= ? AND listened_at < ? GROUP BY month""", args).fetchall()
+                   FROM listens WHERE listened_at >= ? AND listened_at < ?""" + account_sql + " GROUP BY month",
+                [*args, *account_params]).fetchall()
             aggregate_months = conn.execute(
                 """SELECT CAST(strftime('%m', datetime(period_start, 'unixepoch')) AS INTEGER) month, SUM(play_count) plays
-                   FROM listening_aggregates WHERE period_start < ? AND period_end > ? GROUP BY month""",
-                (args[1], args[0])).fetchall()
+                   FROM listening_aggregates WHERE period_start < ? AND period_end > ?""" + account_sql + " GROUP BY month",
+                [end_ts, start_ts, *account_params]).fetchall()
             month_totals: dict[int, int] = {}
             for row in [*event_months, *aggregate_months]:
                 month_totals[row["month"]] = month_totals.get(row["month"], 0) + int(row["plays"] or 0)
             artist_count = conn.execute(
                 """SELECT COUNT(DISTINCT t.artist_id) FROM tracks t WHERE t.id IN (
-                     SELECT track_id FROM listens WHERE listened_at >= ? AND listened_at < ?
-                     UNION SELECT track_id FROM listening_aggregates WHERE period_start < ? AND period_end > ?)""",
-                (*args, args[1], args[0])).fetchone()[0]
+                     SELECT track_id FROM listens WHERE listened_at >= ? AND listened_at < ?""" + account_sql +
+                """ UNION SELECT track_id FROM listening_aggregates WHERE period_start < ? AND period_end > ?""" +
+                account_sql + ")",
+                [*args, *account_params, end_ts, start_ts, *account_params]).fetchone()[0]
             track_count = conn.execute(
                 """SELECT COUNT(*) FROM tracks t WHERE t.id IN (
-                     SELECT track_id FROM listens WHERE listened_at >= ? AND listened_at < ?
-                     UNION SELECT track_id FROM listening_aggregates WHERE period_start < ? AND period_end > ?)""",
-                (*args, args[1], args[0])).fetchone()[0]
+                     SELECT track_id FROM listens WHERE listened_at >= ? AND listened_at < ?""" + account_sql +
+                """ UNION SELECT track_id FROM listening_aggregates WHERE period_start < ? AND period_end > ?""" +
+                account_sql + ")",
+                [*args, *account_params, end_ts, start_ts, *account_params]).fetchone()[0]
         headline = {"plays": event_headline["plays"] + aggregate_headline["plays"],
                     "tracks": track_count, "artists": artist_count,
                     "listened_ms": event_headline["listened_ms"] + aggregate_headline["listened_ms"]}

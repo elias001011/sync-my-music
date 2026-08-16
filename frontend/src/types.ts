@@ -39,6 +39,12 @@ export interface Account {
   capabilities?: ProviderCapabilities
   /** Emergency connector switch. Disabled providers remain in the database but no reads/writes run. */
   enabled?: boolean
+  /** Stable account profile id for live connectors (`{provider}:default`). */
+  account_id?: string
+  /** Real per-surface capabilities of this provider. */
+  surface_capabilities?: Partial<Record<SurfaceName, SurfaceCapability>>
+  /** Current per-surface switches for this account (absent = all on). */
+  surfaces?: Partial<Record<SurfaceName, boolean>>
 }
 
 export interface ProviderCapabilities {
@@ -47,6 +53,13 @@ export interface ProviderCapabilities {
   playlist_create?: boolean
   playlist_write?: boolean
 }
+
+/** What this provider can really do per surface: 'rw' read+write, 'r'
+ * read/import only, '-' unsupported. The UI never offers writes where the
+ * connector can't perform them. */
+export type SurfaceCapability = 'rw' | 'r' | '-'
+
+export type SurfaceName = 'playlists' | 'liked_tracks' | 'saved_albums' | 'followed_artists' | 'history'
 
 export interface LibrarySummary {
   tracks: number
@@ -65,6 +78,12 @@ export interface LibraryAccount {
   status: string
   auth_mode: string | null
   is_default: boolean
+  /** Imported-data counts (canonical rows owned by this account). */
+  tracks: number
+  playlists: number
+  surfaces: number
+  listens: number
+  updated_at: number
 }
 
 export interface LibraryTrack {
@@ -100,6 +119,10 @@ export interface RecapRankedArtist {
 
 export interface RecapService {
   source: string
+  /** The account that contributed this row; null for legacy listens without one. */
+  account_id?: string | null
+  /** Human label of the contributing account (falls back to the id/source). */
+  account_label?: string
   plays: number
   listened_ms: number
 }
@@ -343,6 +366,9 @@ export interface SyncJob {
   mode: SyncMode
   source: string
   providers: string
+  /** Per-account participants (account_ids); the backend derives this from
+   * `providers` on save when omitted (legacy compatibility). */
+  accounts?: string
   playlists: string
   interval: string
   max_adds: number

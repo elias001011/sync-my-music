@@ -25,10 +25,12 @@ class SpotifyTarget(MirrorTarget):
     tag = "spotify"
     source = "spotify"
 
-    def __init__(self, sp, cache_file, sync_peer=False, songs=None):
+    def __init__(self, sp, cache_file, sync_peer=False, songs=None, account=None, config=None):
         self._sp = sp
         self.cache_file = cache_file
         self._me = None
+        self.account_id = account or "spotify:default"
+        self._config = config
         # True when built as an N-way reconcile peer (not a one-off transfer). In
         # cookie mode this makes the read backfill ISRC and FAIL CLOSED if it can't —
         # so a sync never matches Spotify on name/artist alone and churns playlists.
@@ -38,10 +40,15 @@ class SpotifyTarget(MirrorTarget):
         # playlist_tracks). None for transfers/browse, which don't need ISRC.
         self._songs = songs
 
+    def _backend(self):
+        """The write backend for THIS account (its own config wins; the legacy
+        path falls back to the process env)."""
+        return spotify_write_backend(self._config)
+
     def _user(self):
         if self._me is None:
-            if spotify_write_backend() == "cookie":
-                self._me = spotify_cookie.current_user_id()
+            if self._backend() == "cookie":
+                self._me = spotify_cookie.current_user_id(account_id=self.account_id)
             else:
                 self._me = spotify._retry(lambda: self._sp.current_user(), "current_user")["id"]
         return self._me
@@ -60,16 +67,16 @@ class SpotifyTarget(MirrorTarget):
 
     # -- MirrorTarget ----------------------------------------------------------
     def list_playlists(self):
-        if spotify_write_backend() == "cookie":
-            return spotify_cookie.playlists_by_name()
+        if self._backend() == "cookie":
+            return spotify_cookie.playlists_by_name(account_id=self.account_id)
         return spotify.playlists_by_name(self._sp)
 
     def browse_playlists(self):
         # Un-deduped, with `_owned` — so browse lists (and the inherited find_playlist
         # scans) every playlist, including a followed one that shares a name with an
         # owned one. list_playlists() name-dedupes for the sync engine and would hide it.
-        if spotify_write_backend() == "cookie":
-            return spotify_cookie.all_playlists()
+        if self._backend() == "cookie":
+            return spotify_cookie.all_playlists(account_id=self.account_id)
         return spotify.all_playlists(self._sp)
 
     def is_editable(self, playlist):
@@ -81,8 +88,8 @@ class SpotifyTarget(MirrorTarget):
 
     def create(self, sp_playlist):
         name, desc = source_playlist_details(sp_playlist)
-        if spotify_write_backend() == "cookie":
-            pl = spotify_cookie.create(name, public=False, description=desc)
+        if self._backend() == "cookie":
+            pl = spotify_cookie.create(name, public=False, description=desc, account_id=self.account_id)
         else:
             pl = self._write(
                 lambda: self._sp.user_playlist_create(self._user(), name, public=False, description=desc),
@@ -96,12 +103,13 @@ class SpotifyTarget(MirrorTarget):
         # the same web-player path the writes use. As an N-way peer (sync_peer), the
         # read backfills ISRC and fails closed if it can't — so a bidirectional sync
         # never matches Spotify on name/artist alone and churns.
-        if spotify_write_backend() == "cookie":
+        if self._backend() == "cookie":
             known = None
             if self._sync_peer and self._songs is not None:
-                known = lambda ids: archive.get_isrcs(self._songs, "spotify", ids)  # noqa: E731
+                known = lambda ids: archive.get_isrcs(self._songs, self.state_key, ids)  # noqa: E731
             return spotify_cookie.playlist_tracks(
-                playlist["id"], require_isrc=self._sync_peer, known_isrc=known)
+                playlist["id"], require_isrc=self._sync_peer, known_isrc=known,
+                account_id=self.account_id)
         return spotify.playlist_tracks(self._sp, playlist["id"])
 
     def track_id(self, track):
@@ -138,9 +146,9 @@ class SpotifyTarget(MirrorTarget):
         return None, None
 
     def _query(self, q):
-        if spotify_write_backend() == "cookie":
+        if self._backend() == "cookie":
             try:
-                return spotify_cookie.search_tracks(q, limit=8)
+                return spotify_cookie.search_tracks(q, limit=8, account_id=self.account_id)
             except TargetAuthError:
                 raise
             except Exception:
@@ -162,8 +170,8 @@ class SpotifyTarget(MirrorTarget):
         return best_id
 
     def add(self, playlist, target_ids):
-        if spotify_write_backend() == "cookie":
-            spotify_cookie.add(playlist["id"], target_ids)  # one at a time, in order (see spotify_cookie.add)
+        if self._backend() == "cookie":
+            spotify_cookie.add(playlist["id"], target_ids, account_id=self.account_id)  # one at a time, in order (see spotify_cookie.add)
             return
         for tid in target_ids:  # one at a time preserves date-added order
             self._write(lambda t=tid: self._sp.playlist_add_items(playlist["id"], [_uri(t)]), "add")
@@ -173,15 +181,15 @@ class SpotifyTarget(MirrorTarget):
         tid = self.track_id(track)
         if not tid:
             return
-        if spotify_write_backend() == "cookie":
-            spotify_cookie.remove(playlist["id"], [tid])
+        if self._backend() == "cookie":
+            spotify_cookie.remove(playlist["id"], [tid], account_id=self.account_id)
             return
         self._write(lambda: self._sp.playlist_remove_all_occurrences_of_items(playlist["id"], [_uri(tid)]), "remove")
         polite_sleep(0.3)
 
     def remove_occurrences(self, playlist, positioned):
-        if spotify_write_backend() == "cookie":
-            spotify_cookie.remove_positions(playlist["id"], [pos for pos, _ in positioned])
+        if self._backend() == "cookie":
+            spotify_cookie.remove_positions(playlist["id"], [pos for pos, _ in positioned], account_id=self.account_id)
             return
         # Position-addressed removal against the read-time snapshot: with the
         # same uri present twice, remove() would drop BOTH copies. All positions

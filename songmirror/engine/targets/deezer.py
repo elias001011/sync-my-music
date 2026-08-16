@@ -13,7 +13,7 @@ from ...deezer_web import (
     ENDPOINT as WEB_ENDPOINT,
 )
 from ...oauth import read_token, token_path
-from ..config import REQUEST_TIMEOUT, polite_sleep
+from ..config import REQUEST_TIMEOUT, from_config, polite_sleep
 from ..matching import normalize_text, romanized, track_key
 from .base import MirrorTarget, TargetAuthError
 from .provider_utils import best_candidate, chunks, source_playlist_details
@@ -47,24 +47,25 @@ class DeezerTarget(MirrorTarget):
     tag = "deezer"
     source = "deezer"
 
-    def __init__(self):
-        self.cache_file = os.getenv("DEEZER_CACHE_FILE", "deezer_resolve_cache.json")
+    def __init__(self, config=None):
+        self._config = config
+        self.cache_file = from_config(self._config, "DEEZER_CACHE_FILE", "deezer_resolve_cache.json")
         self._web = None
-        web_headers = (os.getenv("DEEZER_WEB_HEADERS") or "").strip()
-        refresh_token = (os.getenv("DEEZER_REFRESH_TOKEN") or "").strip()
+        web_headers = (from_config(self._config, "DEEZER_WEB_HEADERS") or "").strip()
+        refresh_token = (from_config(self._config, "DEEZER_REFRESH_TOKEN") or "").strip()
         if web_headers or refresh_token:
             try:
                 self._web = DeezerWebClient(
                     web_headers,
                     refresh_token=refresh_token,
-                    token_file=token_path("DEEZER_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE),
-                    endpoint=os.getenv("DEEZER_WEB_ENDPOINT") or WEB_ENDPOINT,
+                    token_file=token_path("DEEZER_WEB_SESSION_FILE", DEFAULT_WEB_SESSION_FILE, self._config),
+                    endpoint=from_config(self._config, "DEEZER_WEB_ENDPOINT") or WEB_ENDPOINT,
                 )
             except ValueError as exc:
                 raise RuntimeError(f"Invalid DEEZER_WEB_HEADERS: {exc}") from exc
             self._token = None
         else:
-            self._token_file = token_path("DEEZER_TOKEN_FILE", DEFAULT_TOKEN_FILE)
+            self._token_file = token_path("DEEZER_TOKEN_FILE", DEFAULT_TOKEN_FILE, self._config)
             self._token = read_token(self._token_file).get("access_token")
             if not self._token:
                 raise RuntimeError("Missing Deezer web session or OAuth token; connect Deezer in Accounts")

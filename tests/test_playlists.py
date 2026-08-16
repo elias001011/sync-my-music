@@ -25,8 +25,8 @@ def test_is_peer_excludes_browse_only():
 
 def test_build_targets_respects_providers(monkeypatch):
     # Deselecting a provider (via opts.providers) excludes it from one-way targets.
-    monkeypatch.setitem(targets._REGISTRY, "apple", lambda o, sp, sync_peer=False, songs=None: "APPLE")
-    monkeypatch.setitem(targets._REGISTRY, "ytmusic", lambda o, sp, sync_peer=False, songs=None: "YT")
+    monkeypatch.setitem(targets._REGISTRY, "apple", lambda o, sp, sync_peer=False, songs=None, account=None: "APPLE")
+    monkeypatch.setitem(targets._REGISTRY, "ytmusic", lambda o, sp, sync_peer=False, songs=None, account=None: "YT")
     opts = parse_args([])
     opts.providers = "spotify,apple"  # ytmusic left out
     assert targets.build_targets(opts) == ["APPLE"]
@@ -36,9 +36,9 @@ def test_empty_providers_means_all(monkeypatch):
     # An empty providers list means "every configured provider" (matching the UI +
     # the empty-playlists convention), NOT "none" — so a job saved without touching
     # the Services step still syncs instead of finding zero peers.
-    monkeypatch.setitem(targets._REGISTRY, "spotify", lambda o, sp, sync_peer=False, songs=None: "SP")
-    monkeypatch.setitem(targets._REGISTRY, "apple", lambda o, sp, sync_peer=False, songs=None: "APPLE")
-    monkeypatch.setitem(targets._REGISTRY, "ytmusic", lambda o, sp, sync_peer=False, songs=None: "YT")
+    monkeypatch.setitem(targets._REGISTRY, "spotify", lambda o, sp, sync_peer=False, songs=None, account=None: "SP")
+    monkeypatch.setitem(targets._REGISTRY, "apple", lambda o, sp, sync_peer=False, songs=None, account=None: "APPLE")
+    monkeypatch.setitem(targets._REGISTRY, "ytmusic", lambda o, sp, sync_peer=False, songs=None, account=None: "YT")
     monkeypatch.setattr(targets, "_SOURCE_ORDER", ["spotify", "apple", "ytmusic"])
     opts = parse_args([])
     opts.providers = ""

@@ -18,7 +18,8 @@ from spotipy.oauth2 import SpotifyOAuth
 
 from . import spotify_web
 from .config import (
-    DEFAULT_SPOTIFY_REDIRECT_URI, DEFAULT_SPOTIFY_TOKEN_CACHE, REQUEST_TIMEOUT, SPOTIFY_SCOPE, required_env)
+    DEFAULT_SPOTIFY_REDIRECT_URI, DEFAULT_SPOTIFY_TOKEN_CACHE, REQUEST_TIMEOUT, SPOTIFY_SCOPE,
+    from_config, required_env, required_env_from)
 from .logs import log, log_note, log_warn
 
 # Connection-level failures spotipy's status-code retry doesn't cover.
@@ -162,15 +163,19 @@ def clear_isrc_probe_cache():
     _isrc_problem.clear()
 
 
-def client(writable=False):
+def client(writable=False, config=None):
     # Read and write request the same grant (SPOTIFY_SCOPE) so a read-only pass
     # never downscopes the cached token on refresh — see the module docstring.
+    # `config` (one account's settings snapshot) scopes the credentials AND the
+    # token cache to that account — two accounts never share a token file.
+    cache_path = (from_config(config, "SPOTIFY_TOKEN_CACHE")
+                  or os.getenv("SPOTIFY_TOKEN_CACHE") or DEFAULT_SPOTIFY_TOKEN_CACHE)
     auth = SpotifyOAuth(
-        client_id=required_env("SPOTIFY_CLIENT_ID"),
-        client_secret=required_env("SPOTIFY_CLIENT_SECRET"),
-        redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI", DEFAULT_SPOTIFY_REDIRECT_URI),
+        client_id=required_env_from(config, "SPOTIFY_CLIENT_ID"),
+        client_secret=required_env_from(config, "SPOTIFY_CLIENT_SECRET"),
+        redirect_uri=from_config(config, "SPOTIFY_REDIRECT_URI", DEFAULT_SPOTIFY_REDIRECT_URI),
         scope=SPOTIFY_SCOPE,
-        cache_path=os.getenv("SPOTIFY_TOKEN_CACHE") or DEFAULT_SPOTIFY_TOKEN_CACHE,
+        cache_path=cache_path,
         open_browser=os.getenv("SPOTIFY_OAUTH_OPEN_BROWSER", "1") != "0",
     )
     # With no usable cached token, spotipy prints a URL and calls input() to paste
