@@ -127,7 +127,8 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
     src_key = source.source
     src_state_key = source.state_key
     agg = {"name": target.name, "pairs": 0, "added": 0, "removed": 0, "missing": 0,
-           "held": 0, "removals_skipped": 0, "skipped": 0, "created": 0, "failed": 0,
+           "held": 0, "deferred": 0, "removals_skipped": 0,
+           "skipped": 0, "created": 0, "failed": 0,
            "held_removals": [], "failures": []}
     cache = load_cache(target.cache_file)
     try:
@@ -155,6 +156,7 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
                     continue
                 try:
                     tgt = target.create(sp_playlist)
+                    archive.reset_playlist_peer_state(songs, state_key, target.state_key)
                     agg["created"] += 1
                     log_note(f"created {target.name} playlist '{name}' (name + description copied)", tag=target.tag)
                 except Exception as e:
@@ -183,7 +185,7 @@ def run_target(target, selected, get_source_tracks, songs, opts, links=None, sou
                     source_key=src_key, source_name=source.name, source_state_key=src_state_key, name=name,
                 )
                 agg["pairs"] += 1
-                for k in ("added", "removed", "missing", "held", "removals_skipped"):
+                for k in ("added", "removed", "missing", "held", "deferred", "removals_skipped"):
                     agg[k] += res[k]
                 _collect_held(agg["held_removals"], res.get("held_removals", []))
                 if res["clean"] and snapshot:
@@ -467,6 +469,11 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
                         continue
                     try:
                         pl = p.create(sp_playlist)
+                        # This physical playlist did not produce the provider's
+                        # stored logical baseline. Reset that side immediately;
+                        # if reconcile later fails, the next pass must still see
+                        # a bootstrap peer rather than a collapsed old playlist.
+                        archive.reset_playlist_peer_state(songs, key, p.state_key)
                         log_note(f"created {p.name} playlist '{name}'", tag=p.tag)
                     except TargetAuthError:
                         raise

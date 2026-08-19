@@ -458,3 +458,31 @@ def clear_playlist_state(conn, playlist):
     conn.execute("DELETE FROM playlist_state_meta WHERE playlist = ?", (playlist,))
     conn.execute("DELETE FROM playlist_pending_removal WHERE playlist = ?", (playlist,))
     conn.commit()
+
+
+def reset_playlist_peer_state(conn, playlist, source):
+    """Forget one provider's state after its physical playlist is recreated.
+
+    Playlist state is keyed by logical pairing so it survives ordinary provider
+    metadata changes. A newly created playlist is the exception: carrying the
+    deleted playlist's baseline forward makes an empty replacement look like a
+    collapsed API read. Clear both N-way membership and the one-way snapshot so
+    the replacement bootstraps from the current source instead of being skipped.
+    """
+    conn.execute(
+        "DELETE FROM playlist_state WHERE playlist = ? AND source = ?",
+        (playlist, source),
+    )
+    conn.execute(
+        "DELETE FROM playlist_state_meta WHERE playlist = ? AND source = ?",
+        (playlist, source),
+    )
+    conn.execute(
+        "DELETE FROM playlist_pending_removal WHERE playlist = ? AND source = ?",
+        (playlist, source),
+    )
+    conn.execute(
+        "DELETE FROM sync_state WHERE pair = ? AND target = ?",
+        (playlist, source),
+    )
+    conn.commit()

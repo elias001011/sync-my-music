@@ -2,6 +2,7 @@
 
 import threading
 
+from songmirror.engine import archive
 import songmirror.engine.runner as runner
 from songmirror.engine.config import Options
 
@@ -316,7 +317,7 @@ def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
                          source_key="spotify", source_name="Spotify", source_state_key="spotify", name=None):
         captured["tgt_id"] = tgt_playlist["id"]
         return {"clean": True, "added": 1, "removed": 0, "missing": 0, "held": 0,
-                "deferred": 0, "removals_skipped": 0, "target_count": 1}
+                "deferred": 2, "removals_skipped": 0, "target_count": 1}
 
     monkeypatch.setattr(runner, "mirror_pair", fake_mirror_pair)
 
@@ -327,6 +328,7 @@ def test_run_target_honors_explicit_pairing(monkeypatch, tmp_path):
 
     assert captured["tgt_id"] == "t99"          # paired target used, not same-name match
     assert agg["added"] == 1
+    assert agg["deferred"] == 2
     assert archive.get_state(songs, "LINK1", "apple") is not None  # state keyed by the link id
     songs.close()
 
@@ -455,6 +457,87 @@ class _Peer:
 
     def is_editable(self, pl):
         return True
+
+
+class _RecreatedPeer(_Peer):
+    """N-way peer whose membership reflects writes to a newly created playlist."""
+
+    def __init__(self, source, isrcs, *, missing=False):
+        super().__init__(source)
+        self._isrcs = list(isrcs)
+        self._missing = missing
+        self.added = []
+
+    def list_playlists(self):
+        if self._missing:
+            return {}
+        return {"aurora": {"id": f"{self.source}-aurora", "name": "Aurora"}}
+
+    def create(self, playlist):
+        self._missing = False
+        return {"id": f"{self.source}-replacement", "name": playlist["name"]}
+
+    def playlist_tracks(self, playlist):
+        return [
+            {
+                "id": f"{self.source}-{isrc}",
+                "name": f"Song {isrc}",
+                "artists": ["Artist"],
+                "artist": "Artist",
+                "duration_ms": 180_000,
+                "isrc": isrc,
+                "added_at": "2026-01-01",
+            }
+            for isrc in self._isrcs
+        ]
+
+    def track_id(self, track):
+        return track["id"]
+
+    def prefetch(self, tracks, cache):
+        pass
+
+    def native_isrc_map(self, cache):
+        return {}
+
+    def resolve(self, track, cache):
+        return f"{self.source}-{track['isrc']}", "isrc"
+
+    def add(self, playlist, ids):
+        for track_id in ids:
+            isrc = track_id.removeprefix(f"{self.source}-")
+            self.added.append(isrc)
+            if isrc not in self._isrcs:
+                self._isrcs.append(isrc)
+
+    def remove(self, playlist, track):
+        self._isrcs.remove(track["isrc"])
+
+
+def test_nway_created_replacement_discards_the_deleted_playlists_baseline(monkeypatch, tmp_path):
+    songs = archive.connect(str(tmp_path / "songs.db"))
+    for source in ("spotify", "apple"):
+        archive.set_playlist_state(songs, "aurora", source, {"i:A", "i:B"})
+
+    spotify = _RecreatedPeer("spotify", ["A", "B"])
+    apple = _RecreatedPeer("apple", [], missing=True)
+    monkeypatch.setattr(runner, "build_peers", lambda opts, sp, songs=None: [spotify, apple])
+    monkeypatch.setattr(runner, "load_cache", lambda path: {"isrc": {}, "search": {}, "dirty": False})
+    monkeypatch.setattr(runner, "save_cache", lambda path, cache: None)
+
+    runner._run_nway(
+        _opts(sync_mode="nway", execute=True),
+        object(),
+        [{"id": "spotify-aurora", "name": "Aurora"}],
+        songs,
+    )
+
+    assert apple.added == ["A", "B"]
+    # Additions enter the baseline on the next read, after the provider proves
+    # they landed; this pass still marks the replacement as initialized-empty.
+    assert archive.has_playlist_state(songs, "aurora", "apple")
+    assert archive.get_playlist_state(songs, "aurora", "apple") == set()
+    songs.close()
 
 
 def test_nway_counts_and_names_a_playlist_it_could_not_sync(monkeypatch):
