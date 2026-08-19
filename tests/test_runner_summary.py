@@ -344,6 +344,7 @@ def test_summary_detail_is_bounded_but_counts_are_not():
 
 def test_summary_entry_carries_detail_and_defaults_it_empty():
     assert runner._summary_entry("N-way", {})["held_removals"] == []
+    assert runner._summary_entry("N-way", {})["change_diagnostics"] == []
     entry = runner._summary_entry("N-way", {"held_removals": [{"track": "x"}]})
     assert entry["held_removals"] == [{"track": "x"}]
 

@@ -49,12 +49,14 @@ def save_cache(cache_file, cache):
 
 
 _SUMMARY_KEYS = ("added", "removed", "missing", "held", "deferred", "removals_skipped",
-                 "created", "skipped", "failed", "isrc_fallback")
+                 "created", "skipped", "failed", "isrc_fallback", "identity_changes",
+                 "unconfirmed_absences", "confirmed_absences", "read_anomalies")
 
 
 # How many held-back removals travel with a pass summary. The counts above stay
 # authoritative for the total; this only bounds what the UI can list.
 HELD_REMOVAL_DETAIL = 50
+CHANGE_DIAGNOSTIC_DETAIL = 50
 
 # Same bound for failed playlists. Smaller because a pass that fails this many is
 # failing for one shared reason, which the first few already name.
@@ -63,6 +65,12 @@ FAILURE_DETAIL = 20
 
 def _collect_held(dest, records):
     room = HELD_REMOVAL_DETAIL - len(dest)
+    if room > 0:
+        dest.extend(records[:room])
+
+
+def _collect_diagnostics(dest, records):
+    room = CHANGE_DIAGNOSTIC_DETAIL - len(dest)
     if room > 0:
         dest.extend(records[:room])
 
@@ -81,6 +89,7 @@ def _summary_entry(name, agg):
     for k in _SUMMARY_KEYS:
         entry[k] = agg.get(k, 0)
     entry["held_removals"] = agg.get("held_removals", [])
+    entry["change_diagnostics"] = agg.get("change_diagnostics", [])
     entry["failures"] = agg.get("failures", [])
     return entry
 
@@ -421,9 +430,11 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
     dirs = {p.state_key: p.list_playlists() for p in peers}
     caches = {p.state_key: load_cache(p.cache_file) for p in peers}
     total = {"added": 0, "removed": 0, "missing": 0, "held": 0, "deferred": 0,
-             "removals_skipped": 0, "failed": 0}
+             "removals_skipped": 0, "failed": 0, "identity_changes": 0,
+             "unconfirmed_absences": 0, "confirmed_absences": 0, "read_anomalies": 0}
     # Both lists stay out of `total` so the scalar accumulate loop stays scalar.
     held_detail = []
+    change_diagnostics = []
     failures = []
     try:
         for sp_playlist in selected:
@@ -463,6 +474,7 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
                 for k in total:
                     total[k] += stats.get(k, 0)
                 _collect_held(held_detail, stats.get("held_removals", []))
+                _collect_diagnostics(change_diagnostics, stats.get("change_diagnostics", []))
             except TargetAuthError:
                 raise
             except Exception as e:
@@ -472,6 +484,7 @@ def _run_nway(opts, sp, selected, songs, should_continue=None):
         for p in peers:
             save_cache(p.cache_file, caches[p.state_key])
     total["held_removals"] = held_detail
+    total["change_diagnostics"] = change_diagnostics
     total["failures"] = failures
     # Only N-way reads request ISRC, so this is the only path that can spend the
     # degraded per-track budget.
