@@ -20,6 +20,14 @@ def _uri(track_id):
     return track_id if str(track_id).startswith("spotify:") else f"spotify:track:{track_id}"
 
 
+# account_id:playlist_id -> image url. Best-effort, in-process only (not worth a
+# persisted table for a cosmetic field): verified live that the pathfinder
+# document cookie-mode browsing reads (fetchPlaylistContents, shared with the
+# rootlist detail lookup) carries NO playlist-level image field, only each
+# track's own album art — so there is nothing to merely "extract" here.
+_image_cache: dict[str, str] = {}
+
+
 class SpotifyTarget(MirrorTarget):
     name = "Spotify"
     tag = "spotify"
@@ -76,8 +84,37 @@ class SpotifyTarget(MirrorTarget):
         # scans) every playlist, including a followed one that shares a name with an
         # owned one. list_playlists() name-dedupes for the sync engine and would hide it.
         if self._backend() == "cookie":
-            return spotify_cookie.all_playlists(account_id=self.account_id)
+            return self._backfill_cover_art(spotify_cookie.all_playlists(account_id=self.account_id))
         return spotify.all_playlists(self._sp)
+
+    def _backfill_cover_art(self, playlists):
+        """Cookie-mode playlists carry no cover art (confirmed: the web-player
+        read has no image field for the playlist itself). When this account also
+        has an OAuth app configured, its READ access is unaffected by the
+        dev-mode write gate (only playlist-modify-* content endpoints are
+        gated) — borrow it just for the missing thumbnails. Silently does
+        nothing if no OAuth app is set up; a missing cover is cosmetic, never
+        worth failing a browse over."""
+        missing = [pl for pl in playlists if f"{self.account_id}:{pl['id']}" not in _image_cache]
+        if missing:
+            try:
+                sp = spotify.client(config=self._config)
+            except (RuntimeError, TargetAuthError):
+                sp = None
+            if sp is not None:
+                for pl in missing:
+                    try:
+                        images = spotify._retry(
+                            lambda pid=pl["id"]: sp.playlist(pid, fields="images"), "playlist cover art"
+                        ).get("images") or []
+                    except Exception:
+                        continue
+                    _image_cache[f"{self.account_id}:{pl['id']}"] = (images[0] or {}).get("url", "") if images else ""
+        for pl in playlists:
+            url = _image_cache.get(f"{self.account_id}:{pl['id']}")
+            if url:
+                pl["images"] = [{"url": url}]
+        return playlists
 
     def is_editable(self, playlist):
         owner = (playlist.get("owner") or {}).get("id")
