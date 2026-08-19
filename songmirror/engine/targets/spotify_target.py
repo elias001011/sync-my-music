@@ -123,6 +123,11 @@ class SpotifyTarget(MirrorTarget):
     def playlist_count(self, playlist):
         return spotify.track_total(playlist)
 
+    def hydrate_playlist_counts(self, playlists):
+        if self._backend() == "cookie" or self._sp is None:
+            return spotify_cookie.hydrate_playlist_counts(playlists, account_id=self.account_id)
+        return playlists
+
     def create(self, sp_playlist):
         name, desc = source_playlist_details(sp_playlist)
         if self._backend() == "cookie":

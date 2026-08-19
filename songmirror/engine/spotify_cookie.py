@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -61,6 +62,7 @@ _provider = None      # cached spotify_scraper CookieTokenProvider (lazy)
 _provider_key = None
 _uid_by_cookie = {}   # cookie hash -> cached account user id (rootlist filing)
 _isrc_cache = {}      # track_id -> isrc|None, backfilled from /tracks (see _track_isrcs)
+_playlist_count_cache = {}  # (account_id, playlist_id) -> (revision_id, total); rootlist omits totals
 
 
 def _slug(account_id):
@@ -344,6 +346,57 @@ def playlists_by_name(account_id=None):
         if key not in result or playlist.get("_owned"):
             result[key] = playlist
     return result
+
+
+def _playlist_track_total(playlist, account_id=None):
+    """One playlist's item total through the signed-in web-player API.
+
+    The rootlist projection does not reliably include a count. Its revisionId
+    does change with playlist contents, so it is a safe cache validator for
+    this lightweight limit=1 lookup. The cache key is account-scoped so two
+    Spotify accounts' counts never collide.
+    """
+    pid = str(playlist.get("id") or "")
+    revision = playlist.get("snapshot_id") or playlist.get("revisionId")
+    cache_key = (account_id, pid)
+    hit = _playlist_count_cache.get(cache_key)
+    if pid and revision is not None and hit and hit[0] == revision:
+        return hit[1]
+    try:
+        data = _pf("fetchPlaylistContents", {
+            "uri": playlist.get("uri") or _puri(pid),
+            "offset": 0,
+            "limit": 1,
+        }, account_id=account_id)
+        raw_total = ((data.get("playlistV2") or {}).get("content") or {}).get("totalCount")
+        if raw_total is None:
+            raise RuntimeError("Spotify playlist count response did not include totalCount")
+        count = int(raw_total)
+    except Exception:
+        return hit[1] if hit else None
+    if pid and revision is not None:
+        _playlist_count_cache[cache_key] = (revision, count)
+    return count
+
+
+def hydrate_playlist_counts(playlists, account_id=None):
+    """Attach Web-API-shaped ``items.total`` values to rootlist rows.
+
+    Counts are browse metadata, not required for sync correctness. Fetch cache
+    misses concurrently so a large library does not turn into a long serial
+    request train; individual failures leave that card's count unknown while
+    preserving the playlist list itself.
+    """
+    rows = list(playlists)
+    if not rows:
+        return rows
+    workers = min(6, len(rows))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        counts = list(pool.map(lambda pl: _playlist_track_total(pl, account_id), rows))
+    for playlist, count in zip(rows, counts):
+        if count is not None:
+            playlist["items"] = {"total": count}
+    return rows
 
 
 def search_tracks(query, limit=8, account_id=None):

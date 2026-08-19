@@ -284,6 +284,36 @@ def test_playlist_content_read_fails_closed_on_early_empty_page(monkeypatch):
         list(sc._content_items({"id": "playlist"}))
 
 
+def test_cookie_browse_hydrates_track_counts_and_caches_by_revision(monkeypatch):
+    from songmirror.engine import spotify_cookie as sc
+
+    sc._playlist_count_cache.clear()
+    calls = []
+
+    def fake_pf(op, variables, account_id=None):
+        calls.append((op, variables))
+        assert op == "fetchPlaylistContents"
+        return {"playlistV2": {"content": {"items": [{}], "totalCount": 42}}}
+
+    monkeypatch.setattr(sc, "_pf", fake_pf)
+    playlists = [
+        {"id": "p1", "uri": "spotify:playlist:p1", "snapshot_id": "revision-1"},
+    ]
+
+    sc.hydrate_playlist_counts(playlists)
+    assert playlists[0]["items"]["total"] == 42
+    assert calls == [("fetchPlaylistContents", {
+        "uri": "spotify:playlist:p1", "offset": 0, "limit": 1,
+    })]
+
+    sc.hydrate_playlist_counts(playlists)
+    assert len(calls) == 1
+
+    changed = [{"id": "p1", "uri": "spotify:playlist:p1", "snapshot_id": "revision-2"}]
+    sc.hydrate_playlist_counts(changed)
+    assert len(calls) == 2
+
+
 def test_writes_use_oauth_by_default(monkeypatch):
     monkeypatch.delenv("SPOTIFY_WRITE_BACKEND", raising=False)
     # If routing leaks to the cookie path, these blow up the test.
