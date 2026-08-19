@@ -27,6 +27,7 @@ from ...services.musify import (
     listening_entries_from_stats,
     listening_periods_from_stats,
 )
+from ...services.csv_transfer import MAX_CSV_BYTES, export_collection_csv, import_csv_playlist
 from ...services.spotify_export import MAX_SPOTIFY_EXPORT_BYTES, import_spotify_export
 from ...services.sonora import SonoraAdapter
 
@@ -106,6 +107,38 @@ def library_tracks(request: Request, q: str = "", limit: int = Query(100, ge=1, 
 @router.get("/api/library/accounts")
 def library_accounts(request: Request):
     return request.app.state.music_db.accounts()
+
+
+@router.get("/api/library/collections")
+def library_collections(request: Request):
+    """Canonical playlists (id, title, track_count) - e.g. to pick which one
+    to export as CSV, independent of which account(s) mirror it."""
+    return request.app.state.music_db.collections()
+
+
+@router.get("/api/library/collections/{collection_id}/csv")
+def export_collection_csv_route(collection_id: str, request: Request):
+    try:
+        filename, payload = export_collection_csv(request.app.state.music_db, collection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return StreamingResponse(io.BytesIO(payload), media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.post("/api/library/csv-import")
+async def import_csv_route(request: Request, file: UploadFile, name: str = Form(...),
+                           label: str = Form("CSV import"), account_id: str | None = Form(None)):
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="playlist name is required")
+    raw = await file.read(MAX_CSV_BYTES + 1)
+    if len(raw) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=413, detail=f"CSV file is larger than {MAX_CSV_BYTES // (1024 * 1024)} MiB")
+    try:
+        return import_csv_playlist(request.app.state.music_db, raw, name.strip(),
+                                   label.strip() or "CSV import", account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/library/accounts/{account_id}/import")

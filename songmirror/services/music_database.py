@@ -958,6 +958,18 @@ class MusicDatabase:
             counts["listened_ms"] = event_ms + aggregate_ms
         return counts
 
+    def collections(self) -> list[dict[str, Any]]:
+        """Canonical playlists (id, title, track_count) - the picker for
+        actions scoped to one playlist (e.g. CSV export) rather than an
+        account's live browse list."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id, c.title, COUNT(ci.track_id) track_count
+                   FROM collections c LEFT JOIN collection_items ci ON ci.collection_id=c.id
+                   WHERE c.kind='playlist' GROUP BY c.id ORDER BY c.title COLLATE NOCASE"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def recap(self, year: int | None = None, month: int | None = None,
               account_ids: Iterable[str] | None = None) -> dict[str, Any]:
         """Recap for a year/month. `account_ids` restricts every headline, ranking
