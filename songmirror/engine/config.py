@@ -131,9 +131,14 @@ class Options:
         if self.account_configs is None:
             self.account_configs = {}
 
-    def account_config(self, account_id: str) -> dict:
-        """Config snapshot for one participating account (empty if unknown)."""
-        return self.account_configs.get(account_id) or {}
+    def account_config(self, account_id: str) -> dict | None:
+        """Config snapshot for one participating account, or None when the id
+        has no registered snapshot (the CLI/env-only path uses synthetic
+        `{provider}:default` ids with nothing in `account_configs`). None is
+        the signal `from_config()` needs to fall back to the process env —
+        collapsing it to `{}` here would make every CLI-only pass look like a
+        real, credential-less account and silently skip every provider."""
+        return self.account_configs.get(account_id)
 
     def account_provider(self, account_id: str) -> str:
         return str(account_id).split(":", 1)[0]
