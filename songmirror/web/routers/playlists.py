@@ -85,6 +85,8 @@ def list_links(request: Request):
 
 @router.put("/api/links")
 def upsert_link(request: Request, body: dict = Body(...)):
+    if not body.get("name"):
+        raise HTTPException(status_code=400, detail="missing required field: name")
     link = PlaylistLink(
         name=body["name"],
         members=body.get("members", {}),

@@ -1,15 +1,20 @@
 """One-off playlist transfers + conflict resolution."""
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
+
+_REQUIRED_TRANSFER_FIELDS = ("source_provider", "source_playlist_id", "dest_provider")
 
 
 @router.post("/api/transfers")
 async def start_transfer(request: Request, body: dict = Body(...)):
     # async so submit()'s asyncio.create_task has a running loop (a sync endpoint
     # runs in a threadpool with no loop and would 500).
+    missing = [field for field in _REQUIRED_TRANSFER_FIELDS if not body.get(field)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"missing required field(s): {', '.join(missing)}")
     job = request.app.state.transfers.submit({
         "source_provider": body["source_provider"],
         "source_playlist_id": body["source_playlist_id"],
@@ -38,6 +43,8 @@ def transfer_status(job_id: str, request: Request):
 def resolve_conflict(job_id: str, request: Request, body: dict = Body(...)):
     # Declared before the generic /{action} route below so it isn't shadowed
     # (FastAPI matches routes in declaration order).
+    if not body.get("key") or not body.get("dest_id"):
+        raise HTTPException(status_code=400, detail="missing required field(s): key, dest_id")
     return {"ok": request.app.state.transfers.resolve(job_id, body["key"], body["dest_id"])}
 
 

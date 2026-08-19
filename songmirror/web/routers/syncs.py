@@ -7,7 +7,7 @@ stay in step with the store.
 import asyncio
 from dataclasses import asdict
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ...services.syncs import SyncJob
@@ -50,7 +50,10 @@ def _job_from(values):
     data = {k: v for k, v in values.items() if k in _FIELDS}
     for k in ("max_adds", "max_removals"):
         if k in data:
-            data[k] = int(data[k])
+            try:
+                data[k] = int(data[k])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{k} must be an integer") from None
     for k in ("enabled", "download", "apply_large_removals"):
         if k in data:
             data[k] = bool(data[k])
