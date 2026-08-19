@@ -179,6 +179,43 @@ def test_spotify_redirect_uri_reflects_access_port(tmp_path):
         assert store.get("SPOTIFY_REDIRECT_URI") == "http://127.0.0.1:8888/oauth/spotify/callback"
 
 
+def test_oauth_redirect_uses_configured_public_url(tmp_path, monkeypatch):
+    """A remotely hosted Docker deployment must advertise its browser-reachable
+    URL, not the container/request URL that happened to reach FastAPI.
+
+    Uses the env var (not store.save()) deliberately: SettingsStore.save()
+    projects into process os.environ with no per-test scope, so a value set
+    that way would leak into later tests. monkeypatch reverts automatically.
+    """
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "cid", "SPOTIFY_CLIENT_SECRET": "sec"})
+    monkeypatch.setenv("SONGMIRROR_PUBLIC_URL", "https://music.example.test/sync/")
+    with TestClient(create_app(settings=store), base_url="http://127.0.0.1:8080") as client:
+        result = client.post("/api/accounts/spotify/connect").json()
+    expected = "https://music.example.test/sync/oauth/spotify/callback"
+    assert result["redirect_uri"] == expected
+    assert store.get("SPOTIFY_REDIRECT_URI") == expected
+
+
+def test_oauth_redirect_rejects_invalid_public_url(tmp_path, monkeypatch):
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "cid", "SPOTIFY_CLIENT_SECRET": "sec"})
+    monkeypatch.setenv("SONGMIRROR_PUBLIC_URL", "music.example.test?from=compose")
+    with TestClient(create_app(settings=store), raise_server_exceptions=False) as client:
+        result = client.post("/api/accounts/spotify/connect")
+    assert result.status_code == 500
+    assert "SONGMIRROR_PUBLIC_URL" in result.json()["detail"]
+
+
+def test_oauth_redirect_keeps_safe_loopback_fallback_when_unset(tmp_path, monkeypatch):
+    store = SettingsStore(dir=tmp_path)
+    store.save({"SPOTIFY_CLIENT_ID": "cid", "SPOTIFY_CLIENT_SECRET": "sec"})
+    monkeypatch.delenv("SONGMIRROR_PUBLIC_URL", raising=False)
+    with TestClient(create_app(settings=store), base_url="http://localhost:8888") as client:
+        result = client.post("/api/accounts/spotify/connect").json()
+    assert result["redirect_uri"] == "http://127.0.0.1:8888/oauth/spotify/callback"
+
+
 def test_oauth_callback_handles_provider_error(tmp_path):
     # Spotify (or the user denying) can bounce back with ?error=... instead of a
     # code — the callback must render a friendly page, not a 500 with a raw

@@ -334,6 +334,14 @@ docker compose logs -f           # watch it work
 
 **No `.env` is needed to start** — everything is configured in the browser and saved under `./data`. OAuth, partner-token, and API-key setup all live on the Accounts page; each wizard explains the service-specific prerequisites and exact callback URI. Then build your syncs on the Sync page.
 
+Opening Sync My Music from another computer on your LAN works at `http://<server>:8888` — but Spotify's OAuth callback is derived from the request URL by default, which breaks behind Docker port-mapping or a reverse proxy that changes the browser-visible host. Set the browser-visible base URL in `.env` when that applies to you:
+
+```dotenv
+SONGMIRROR_PUBLIC_URL=https://music.example.com
+```
+
+Sync My Music will then advertise `https://music.example.com/oauth/spotify/callback`; register that exact URI in the Spotify app dashboard and recreate the container with `docker compose up -d --force-recreate`. A reverse-proxy base path is supported too (for example, `https://example.com/sync-my-music`). [Spotify requires HTTPS](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri) for every non-loopback redirect; plain HTTP is accepted only with literal loopback addresses such as `127.0.0.1`, not a LAN IP or `localhost`.
+
 | | |
 | --- | --- |
 | **Port** | The UI is published on host **8888** (the `8888:8080` mapping in `docker-compose.yml`; change the host side if it clashes). **LAN-only** — don't port-forward it to the internet; the UI has no login yet. |
