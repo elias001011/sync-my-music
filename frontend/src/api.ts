@@ -4,7 +4,9 @@
 import type {
   Account,
   ConnectResponse,
+  CsvImportResult,
   LinkUpsertRequest,
+  LibraryCollection,
   LibrarySummary,
   LibraryAccount,
   LibraryTracksResponse,
@@ -101,6 +103,15 @@ export const api = {
     form.append('backup', file)
     form.append('label', label)
     return request<SpotifyExportImport>('/api/spotify/export-import', { method: 'POST', body: form })
+  },
+  getLibraryCollections: () => request<LibraryCollection[]>('/api/library/collections'),
+  csvExportUrl: (collectionId: string) => `/api/library/collections/${encodeURIComponent(collectionId)}/csv`,
+  importCsvPlaylist: (file: File, name: string, label: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', name)
+    form.append('label', label)
+    return request<CsvImportResult>('/api/library/csv-import', { method: 'POST', body: form })
   },
   restoreAccountBackup: (file: File, accountId?: string) => {
     const form = new FormData()

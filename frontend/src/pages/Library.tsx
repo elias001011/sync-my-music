@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { MusifyBackupCard } from '@/components/library/MusifyBackupCard'
 import { SpotifyExportCard } from '@/components/library/SpotifyExportCard'
 import { AccountBackupsCard } from '@/components/library/AccountBackupsCard'
+import { CsvLibraryCard } from '@/components/library/CsvLibraryCard'
 import type { LibrarySummary, LibraryTrack } from '@/types'
 
 function duration(ms: number | null) {
@@ -70,6 +71,7 @@ export default function Library() {
 
       <MusifyBackupCard onImported={refresh} />
       <SpotifyExportCard onImported={refresh} />
+      <CsvLibraryCard onImported={refresh} />
       <AccountBackupsCard onRestored={refresh} />
 
       <Card className="overflow-hidden">

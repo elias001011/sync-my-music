@@ -199,6 +199,23 @@ export interface SpotifyExportImport {
   listens_duplicates: number
 }
 
+export interface LibraryCollection {
+  id: string
+  title: string
+  track_count: number
+}
+
+export interface CsvImportResult {
+  account_id: string
+  label: string
+  tracks: number
+  playlists: number
+  playlist_tracks: number
+  liked_tracks: number
+  albums: number
+  artists: number
+}
+
 export interface SonoraDevice {
   device_id: string
   name: string
