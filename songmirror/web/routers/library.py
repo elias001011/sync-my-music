@@ -429,7 +429,8 @@ async def musify_export(request: Request, body: dict = Body(...)):
 def sonora_backup(request: Request, account_id: str = "sonora:default"):
     adapter = (request.app.state.sonora.adapter if account_id == request.app.state.sonora.adapter.account_id
                else SonoraAdapter(request.app.state.music_db, account_id, account_id.split(":", 1)[-1]))
-    payload = json.dumps(adapter.export_backup(), ensure_ascii=False).encode()
+    surfaces = _sonora_surfaces(_enabled_surfaces(request.app.state.settings, account_id))
+    payload = json.dumps(adapter.export_backup(surfaces), ensure_ascii=False).encode()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("backup.json", payload)
@@ -543,9 +544,14 @@ def sonora_peer_pair_verify(request: Request, body: dict = Body(...)):
 
 @router.post("/api/sync/merge")
 def sonora_peer_merge(request: Request, body: dict = Body(...)):
+    # The Sonora app calls this on its own schedule, not just when the desktop
+    # UI initiates a sync — it must respect the same account surface toggles
+    # as every other Sonora path (import_backup already did; export_backup and
+    # this endpoint's import both defaulted to every surface regardless).
     service = request.app.state.sonora
     client_id = str(body.get("clientId") or "")
     if not service.paired(client_id):
         raise HTTPException(status_code=403, detail="Device not paired. Request pairing first.")
-    stats = service.adapter.import_backup(body.get("library") or {})
-    return {"library": service.adapter.export_backup(), "stats": stats}
+    surfaces = _sonora_surfaces(_enabled_surfaces(request.app.state.settings, service.adapter.account_id))
+    stats = service.adapter.import_backup(body.get("library") or {}, surfaces=surfaces)
+    return {"library": service.adapter.export_backup(surfaces), "stats": stats}
