@@ -2,7 +2,23 @@
 membership intact, clear the baseline on apply so nothing propagates."""
 
 from songmirror.engine import archive, dedupe
+from songmirror.engine.config import parse_args
+from songmirror.engine.targets import build_peers
 from songmirror.engine.targets.base import MirrorTarget, _normalize
+
+
+def test_main_builds_peers_with_an_options_object_build_peers_can_use():
+    # Regression: _main() used to hand build_peers() a bare hand-rolled class
+    # with only providers/storefront/cache_file/spotify_cache_file - none of
+    # the account-aware builders' opts.accounts / opts.account_config() calls
+    # existed on it, so any pass raised AttributeError before doing anything
+    # (each builder does `opts.account_config(account)` for the synthesized
+    # "{provider}:default" id `_participants()` always produces now).
+    # parse_args([]) is a real Options (empty accounts/account_configs, same
+    # legacy/env-only semantics) and must not crash the same call - whatever
+    # peers it finds configured in this environment, the call itself must
+    # not raise AttributeError.
+    assert isinstance(build_peers(parse_args([]), sp=None), list)
 
 
 class _Peer(MirrorTarget):

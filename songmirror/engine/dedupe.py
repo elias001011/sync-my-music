@@ -168,8 +168,7 @@ def _main(argv=None):
     from dotenv import load_dotenv
 
     from . import spotify
-    from .config import (DEFAULT_CACHE_FILE, DEFAULT_PROVIDERS, DEFAULT_SONG_CACHE_FILE,
-                         DEFAULT_SPOTIFY_CACHE_FILE, DEFAULT_STOREFRONT)
+    from .config import DEFAULT_SONG_CACHE_FILE, parse_args
     from .runner import load_cache
     from .targets import build_peers
 
@@ -186,14 +185,15 @@ def _main(argv=None):
 
     load_dotenv(os.getenv("SONGMIRROR_ENV_FILE") or ".env", override=True)
 
-    class _Opts:  # just the fields the peer builders read
-        providers = os.getenv("PROVIDERS", DEFAULT_PROVIDERS)
-        storefront = os.getenv("APPLE_STOREFRONT") or DEFAULT_STOREFRONT
-        cache_file = os.getenv("APPLE_CACHE_FILE", DEFAULT_CACHE_FILE)
-        spotify_cache_file = os.getenv("SPOTIFY_CACHE_FILE", DEFAULT_SPOTIFY_CACHE_FILE)
+    # A real Options (legacy/env-only path: empty accounts/account_configs) so
+    # build_peers' account-aware builders get the accounts dict AND the
+    # account_config() method they now require - a hand-rolled stand-in class
+    # with only the plain fields crashed with AttributeError the moment a
+    # builder called opts.account_config() for the synthesized ":default" id.
+    opts = parse_args([])
 
     sp = spotify.client(writable=args.execute)
-    peers = build_peers(_Opts(), sp)
+    peers = build_peers(opts, sp)
     songs = archive.connect(os.getenv("SONG_CACHE_FILE", DEFAULT_SONG_CACHE_FILE))
     caches = {p.source: load_cache(p.cache_file) for p in peers}
     dirs = {p.source: p.list_playlists() for p in peers}
