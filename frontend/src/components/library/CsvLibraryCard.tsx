@@ -23,11 +23,12 @@ export function CsvLibraryCard({ onImported }: { onImported: () => void | Promis
     void refreshCollections()
   }, [])
 
-  async function refreshCollections() {
+  async function refreshCollections(preferTitle?: string) {
     try {
       const rows = await api.getLibraryCollections()
       setCollections(rows)
-      setSelected((current) => current || rows[0]?.id || '')
+      const preferred = preferTitle ? rows.find((r) => r.title === preferTitle) : undefined
+      setSelected((current) => preferred?.id || current || rows[0]?.id || '')
     } catch {
       // The picker is a convenience — a failed refresh just leaves it empty.
     }
@@ -37,10 +38,16 @@ export function CsvLibraryCard({ onImported }: { onImported: () => void | Promis
     if (!file || !name.trim()) return
     setBusy(true)
     setError(null)
+    const importedName = name.trim()
     try {
-      setResult(await api.importCsvPlaylist(file, name.trim(), label.trim() || 'CSV import'))
+      setResult(await api.importCsvPlaylist(file, importedName, label.trim() || 'CSV import'))
       await onImported()
-      await refreshCollections()
+      await refreshCollections(importedName)
+      // Ready for a distinct next upload — reusing this exact state would
+      // silently resubmit the same file if the user forgets to pick a new one.
+      setFile(null)
+      setName('')
+      if (inputRef.current) inputRef.current.value = ''
     } catch (err) {
       setError(errorMessage(err))
     } finally {

@@ -62,6 +62,21 @@ def test_parse_rejects_oversized_file():
         parse_csv_playlist(huge, "Mix")
 
 
+def test_parse_rejects_csv_with_no_usable_tracks():
+    for empty in (b"", b"Title,Artist,Album\n", b"Title,Artist\n,\n"):
+        with pytest.raises(ValueError):
+            parse_csv_playlist(empty, "Mix")
+
+
+def test_parse_recovers_non_utf8_encoding():
+    # A Windows/Excel export in cp1252, not UTF-8 - must not silently mangle
+    # accented names into replacement characters.
+    raw = "Title,Artist\nCafé,Björk\n".encode("cp1252")
+    playlist = parse_csv_playlist(raw, "Mix")
+    assert playlist["tracks"][0]["track_name"] == "Café"
+    assert playlist["tracks"][0]["artist_name"] == "Björk"
+
+
 def test_account_id_for_is_stable_and_namespaced():
     a = account_id_for("My Playlists")
     b = account_id_for("My Playlists")
@@ -103,6 +118,30 @@ def test_export_unknown_collection_raises(tmp_path):
     db = MusicDatabase(tmp_path / "music.db")
     with pytest.raises(ValueError):
         export_collection_csv(db, "does-not-exist")
+
+
+def test_different_playlists_under_the_same_default_label_do_not_collide(tmp_path):
+    # Regression: account_id_for() used to key on label alone. The frontend
+    # leaves "Account label" at its unedited default across imports, so two
+    # different playlists uploaded back to back landed in the SAME account -
+    # and import_provider_library() treats one call as that account's
+    # COMPLETE state, silently deleting whatever wasn't in this batch.
+    db = MusicDatabase(tmp_path / "music.db")
+    import_csv_playlist(db, b"Title,Artist\nSong A,Artist A\n", "Playlist One", "CSV import")
+    import_csv_playlist(db, b"Title,Artist\nSong B,Artist B\n", "Playlist Two", "CSV import")
+
+    titles = {c["title"] for c in db.collections()}
+    assert titles == {"Playlist One", "Playlist Two"}
+
+
+def test_reimporting_same_name_and_label_updates_in_place(tmp_path):
+    db = MusicDatabase(tmp_path / "music.db")
+    import_csv_playlist(db, b"Title,Artist\nOld Song,Artist A\n", "My Playlist", "CSV import")
+    import_csv_playlist(db, b"Title,Artist\nNew Song,Artist A\n", "My Playlist", "CSV import")
+
+    collections = db.collections()
+    assert len(collections) == 1  # updated, not duplicated
+    assert collections[0]["track_count"] == 1
 
 
 def test_import_then_export_round_trip_preserves_track_names(tmp_path):
